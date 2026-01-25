@@ -1,4 +1,4 @@
-package ufc.victor.protocol.coordinator.message;
+package ufc.victor.protocol.commom.message;
 
 public class VotePayload implements MessagePayload{
     private final boolean canCommit;

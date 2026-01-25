@@ -1,17 +1,19 @@
 package ufc.victor.protocol.coordinator;
 
+import ufc.victor.protocol.commom.Timer;
 import ufc.victor.protocol.commom.TransactionId;
-import ufc.victor.protocol.coordinator.message.EmptyPayload;
-import ufc.victor.protocol.coordinator.message.Message;
-import ufc.victor.protocol.coordinator.message.MessageType;
+import ufc.victor.protocol.commom.message.EmptyPayload;
+import ufc.victor.protocol.commom.message.Message;
+import ufc.victor.protocol.commom.message.MessageType;
+import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.node.NodeId;
-import ufc.victor.protocol.log.LogManager;
-import ufc.victor.protocol.log.LogRecord;
-import ufc.victor.protocol.log.LogRecordType;
+import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
+import ufc.victor.protocol.coordinator.log.LogRecord;
+import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 
 import java.time.Instant;
-import java.util.HashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public final class TwoPhaseCommitCoordinator {
 
@@ -22,64 +24,60 @@ public final class TwoPhaseCommitCoordinator {
         INIT,
         WAIT,
         COMMIT,
-        ABORT
+        ABORT,
+        FINISHED
     }
 
     private final TransactionId txId;
     private final NodeId coordinatorId;
-    private final Set<NodeId> participants;
+    private final Set<NodeStatus> participants;
 
-    private final Set<NodeId> voted;
-    private final Set<NodeId> acknowledged;
-
-    private final LogManager log;
-    private final CoordinatorTerminationProtocol terminationProtocol;
-
-    private State state = State.INIT;
-    private MessageType globalDecision = null;
+    private final CoordinatorLogManager log;
+    private final Timer timer;
 
     public TwoPhaseCommitCoordinator(
             TransactionId txId,
             NodeId coordinatorId,
-            Set<NodeId> participants,
-            LogManager log,
-            CoordinatorTerminationProtocol terminationProtocol
+            Set<Node> participants,
+            CoordinatorLogManager log,
+            Timer timer
     ) {
         this.txId = txId;
         this.coordinatorId = coordinatorId;
-        this.participants = participants;
-        this.log = log;
-        this.terminationProtocol = terminationProtocol;
+        this.participants = participants.stream()
+                .map(n -> new NodeStatus(n, NodeState.NONE))
+                .collect(Collectors.toSet());
 
-        this.voted = new HashSet<>();
-        this.acknowledged = new HashSet<>();
+        this.log = log;
+        this.timer = timer;
+    }
+
+
+    private State getState() {
+        LogRecord last = log.read(txId).getLast();
+
+        if (last == null) return State.INIT;
+
+        return switch (last.type()) {
+            case BEGIN_COMMIT -> State.WAIT;
+            case GLOBAL_ABORT -> State.ABORT;
+            case GLOBAL_COMMIT -> State.COMMIT;
+            case END_TRANSACTION -> State.FINISHED; // protocol finished
+        };
     }
 
     // =========================================================
     // Event: Message Arrival
     // =========================================================
     public void onMessage(Message msg) {
-
         switch (msg.type()) {
 
-            // -----------------------------------------
-            // Commit command from scheduler
-            // -----------------------------------------
             case COMMIT_REQUEST -> onCommitRequest();
 
-            // -----------------------------------------
-            // One participant voted abort (unilateral)
-            // -----------------------------------------
             case VOTE_ABORT -> onVoteAbort(msg.from());
 
-            // -----------------------------------------
-            // One participant voted commit
-            // -----------------------------------------
             case VOTE_COMMIT -> onVoteCommit(msg.from());
 
-            // -----------------------------------------
-            // Participant acknowledged final decision
-            // -----------------------------------------
             case ACK -> onAck(msg.from());
 
             default -> {
@@ -88,11 +86,19 @@ public final class TwoPhaseCommitCoordinator {
         }
     }
 
+    private MessageType globalDecision() {
+        return switch (getState()) {
+            case COMMIT -> MessageType.GLOBAL_COMMIT;
+            case ABORT -> MessageType.GLOBAL_ABORT;
+            default -> null;
+        };
+    }
+
     // =========================================================
     // Event: Timeout
     // =========================================================
     public void onTimeout() {
-        terminationProtocol.execute(txId);
+        Terminate();
     }
 
     // =========================================================
@@ -100,109 +106,164 @@ public final class TwoPhaseCommitCoordinator {
     // =========================================================
 
     /**
+     * Valduriez:
      * case Commit do
      *   write begin_commit
-     *   send PREPARE to all participants
+     *   send PREPARE
      *   set timer
      */
     private void onCommitRequest() {
-        if (state != State.INIT) return;
+        if (getState() != State.INIT) return;
 
-        log.write(new LogRecord(
-                txId,
-                LogRecordType.BEGIN_COMMIT,
-                Instant.now()
-        ));
+        writeBeginCommit();
 
         broadcast(MessageType.PREPARE);
-        state = State.WAIT;
+        timer.set();
     }
 
+
+
     /**
+     * Valduriez:
      * case Vote-abort do
      *   write abort
      *   send global-abort
-     *   set timer
      */
     private void onVoteAbort(NodeId from) {
-        if (state != State.WAIT) return;
+        if (getState() != State.WAIT) return;
 
-        globalDecision = MessageType.GLOBAL_ABORT;
+        mark(from, NodeState.ABORTED);
 
-        log.write(new LogRecord(
-                txId,
-                LogRecordType.GLOBAL_ABORT,
-                Instant.now()
-        ));
+
+        writeGlobalAbort();
 
         broadcast(MessageType.GLOBAL_ABORT);
-        state = State.ABORT;
+        timer.set();
     }
 
+
+
     /**
+     * Valduriez:
      * case Vote-commit do
-     *   update list of participants
+     *   update list
      *   if all answered then
-     *     write commit
-     *     send global-commit
-     *     set timer
+     *      write commit
+     *      send global-commit
      */
     private void onVoteCommit(NodeId from) {
-        if (state != State.WAIT) return;
+        if (getState() != State.WAIT) return;
 
-        voted.add(from);
+        mark(from, NodeState.VOTED_COMMIT);
 
-        if (voted.containsAll(participants)) {
-            globalDecision = MessageType.GLOBAL_COMMIT;
+        if (allVotedCommit()) {
 
-            log.write(new LogRecord(
-                    txId,
-                    LogRecordType.GLOBAL_COMMIT,
-                    Instant.now()
-            ));
+            WriteGlobalCommit();
 
             broadcast(MessageType.GLOBAL_COMMIT);
-            state = State.COMMIT;
+            timer.set();
         }
     }
 
+
+
     /**
+     * Valduriez:
      * case Ack do
-     *   update list of acknowledgements
+     *   update acknowledgements
      *   if all acknowledged then
-     *     write end_of_transaction
+     *      write end_of_transaction
      *   else
-     *     resend decision
+     *      resend decision
      */
     private void onAck(NodeId from) {
+        State state = getState();
         if (state != State.COMMIT && state != State.ABORT) return;
 
-        acknowledged.add(from);
+        mark(from, NodeState.ACKED);
 
-        if (acknowledged.containsAll(participants)) {
-
+        if (allAcknowledged()) {
             log.write(new LogRecord(
                     txId,
-                    LogRecordType.END_TRANSACTION,
+                    CoordinatorLogRecordType.END_TRANSACTION,
                     Instant.now()
             ));
-
         } else {
             resendDecisionToMissing();
         }
     }
 
+    private void Terminate() {
+        LogRecord lastRecord = log.read(txId).getLast();
+
+        if (lastRecord == null || lastRecord.type() == CoordinatorLogRecordType.BEGIN_COMMIT) {
+            // INIT or WAIT → unilateral abort
+            writeGlobalAbort();
+            broadcast(MessageType.GLOBAL_ABORT);
+        } else if (lastRecord.type() == CoordinatorLogRecordType.GLOBAL_ABORT) {
+            broadcast(MessageType.GLOBAL_ABORT);
+        } else if (lastRecord.type() == CoordinatorLogRecordType.GLOBAL_COMMIT) {
+            broadcast(MessageType.GLOBAL_COMMIT);
+        }
+
+        timer.set();
+    }
+
+
     // =========================================================
     // Helpers
     // =========================================================
+    private void writeGlobalAbort() {
+        log.write(new LogRecord(
+                txId,
+                CoordinatorLogRecordType.GLOBAL_ABORT,
+                Instant.now()
+        ));
+    }
+    private void writeBeginCommit() {
+        log.write(new LogRecord(
+                txId,
+                CoordinatorLogRecordType.BEGIN_COMMIT,
+                Instant.now()
+        ));
+    }
+
+    private void WriteGlobalCommit() {
+        log.write(new LogRecord(
+                txId,
+                CoordinatorLogRecordType.GLOBAL_COMMIT,
+                Instant.now()
+        ));
+    }
+
+    private void mark(NodeId id, NodeState newState) {
+        participants.stream()
+                .filter(ns -> ns.node().id.equals(id))
+                .forEach(ns -> {
+                    if (ns.state().canTransitionTo(newState)) {
+                        ns.setState(newState);
+                    }
+                });
+    }
+
+
+    private boolean allVotedCommit() {
+        return participants.stream()
+                .allMatch(ns -> ns.state() == NodeState.VOTED_COMMIT);
+    }
+
+    private boolean allAcknowledged() {
+        return participants.stream()
+                .allMatch(ns -> ns.state() == NodeState.ACKED);
+    }
 
     private void broadcast(MessageType type) {
-        for (NodeId p : participants) {
+        for (NodeStatus ns : participants) {
             Message msg = Message.of(
                     type,
                     txId,
                     coordinatorId,
-                    p,
+                    ns.node().id,
                     EmptyPayload.INSTANCE
             );
             send(msg);
@@ -210,21 +271,24 @@ public final class TwoPhaseCommitCoordinator {
     }
 
     private void resendDecisionToMissing() {
-        for (NodeId p : participants) {
-            if (!acknowledged.contains(p)) {
-                Message msg = Message.of(
-                        globalDecision,
+        MessageType decision = globalDecision();
+        if (decision == null) return;
+
+        for (NodeStatus ns : participants) {
+            if (ns.state() != NodeState.ACKED) {
+                send(Message.of(
+                        decision,
                         txId,
                         coordinatorId,
-                        p,
+                        ns.node().id,
                         EmptyPayload.INSTANCE
-                );
-                send(msg);
+                ));
             }
         }
     }
 
-    // Stub for now (LocalNetwork will call this)
+
+    // Stub (LocalNetwork will call this)
     private void send(Message msg) {
         // network.send(msg.to(), msg);
     }

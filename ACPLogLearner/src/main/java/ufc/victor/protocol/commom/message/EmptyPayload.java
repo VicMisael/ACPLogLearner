@@ -1,4 +1,4 @@
-package ufc.victor.protocol.coordinator.message;
+package ufc.victor.protocol.commom.message;
 
  public final class EmptyPayload implements MessagePayload {
 

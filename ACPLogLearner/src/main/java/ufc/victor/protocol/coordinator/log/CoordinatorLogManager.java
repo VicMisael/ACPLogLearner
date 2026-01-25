@@ -1,13 +1,13 @@
-package ufc.victor.protocol.log;
+package ufc.victor.protocol.coordinator.log;
 
 import ufc.victor.protocol.commom.TransactionId;
 
 import java.util.List;
 
-public interface LogManager {
+public interface CoordinatorLogManager {
     void write(LogRecord record);
 
     List<LogRecord> read(TransactionId txId);
 
-    boolean contains(TransactionId txId, LogRecordType type);
+    boolean contains(TransactionId txId, CoordinatorLogRecordType type);
 }

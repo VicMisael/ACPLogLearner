@@ -1,9 +1,12 @@
 package ufc.victor.protocol.coordinator;
 
-import ufc.victor.protocol.coordinator.node.Node;
+enum NodeState {
+    NONE,
+    VOTED_COMMIT,
+    ABORTED,
+    ACKED;
 
-public record NodeState(
-        Node node,
-        NodeState state
-) {
+    boolean canTransitionTo(NodeState next) {
+        return ordinal() <= next.ordinal();
+    }
 }

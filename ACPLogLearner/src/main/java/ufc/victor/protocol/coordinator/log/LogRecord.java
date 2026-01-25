@@ -1,4 +1,4 @@
-package ufc.victor.protocol.log;
+package ufc.victor.protocol.coordinator.log;
 
 import ufc.victor.protocol.commom.TransactionId;
 
@@ -7,10 +7,10 @@ import java.time.Instant;
 public final class LogRecord {
 
     private final TransactionId txId;
-    private final LogRecordType type;
+    private final CoordinatorLogRecordType type;
     private final Instant timestamp;
 
-    public LogRecord(TransactionId txId, LogRecordType type, Instant timestamp) {
+    public LogRecord(TransactionId txId, CoordinatorLogRecordType type, Instant timestamp) {
         this.txId = txId;
         this.type = type;
         this.timestamp = timestamp;
@@ -20,7 +20,7 @@ public final class LogRecord {
         return txId;
     }
 
-    public LogRecordType type() {
+    public CoordinatorLogRecordType type() {
         return type;
     }
 
