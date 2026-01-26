@@ -1,10 +1,13 @@
 package ufc.victor.protocol.participant;
 
+import ufc.victor.protocol.commom.MessageHandler;
+import ufc.victor.protocol.commom.Network;
 import ufc.victor.protocol.commom.Timer;
 import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
+import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
 import ufc.victor.protocol.participant.log.ParticipantLogRecord;
@@ -17,7 +20,7 @@ import static ufc.victor.protocol.commom.message.MessageType.VOTE_ABORT;
 import static ufc.victor.protocol.commom.message.MessageType.VOTE_COMMIT;
 
 
-public final class TwoPhaseCommitParticipant {
+public final class TwoPhaseCommitParticipant implements MessageHandler {
 
     // ----------------------------
     // Valduriez participant states
@@ -30,20 +33,21 @@ public final class TwoPhaseCommitParticipant {
     }
 
     private final TransactionId txId;
-    private final NodeId participantId;
-    private final NodeId coordinatorId;
+    private final Node participantId;
+    private final Node coordinatorId;
 
     private final ParticipantLogManager log;
     private final Timer timer;
     private final TransactionalResource resource;
+    private final Network network;
 
     public TwoPhaseCommitParticipant(
             TransactionId txId,
-            NodeId participantId,
-            NodeId coordinatorId,
+            Node participantId,
+            Node coordinatorId,
             ParticipantLogManager log,
             Timer timer,
-            TransactionalResource resource
+            TransactionalResource resource, Network network
     ) {
         this.txId = txId;
         this.participantId = participantId;
@@ -51,7 +55,10 @@ public final class TwoPhaseCommitParticipant {
         this.log = log;
         this.timer = timer;
         this.resource = resource;
+        this.network = network;
     }
+
+
 
     // =========================================================
     // State derived ONLY from log (crash-safe)
@@ -62,10 +69,9 @@ public final class TwoPhaseCommitParticipant {
         if (last == null) return State.INIT;
 
         return switch (last.type()) {
-            case VOTE_COMMIT -> State.READY;
-            case VOTE_ABORT -> State.ABORT;
-            case GLOBAL_COMMIT -> State.COMMIT;
-            case GLOBAL_ABORT -> State.ABORT;
+            case READY -> State.READY;
+            case ABORT -> State.ABORT;
+            case COMMIT -> State.COMMIT;
         };
     }
 
@@ -116,7 +122,7 @@ public final class TwoPhaseCommitParticipant {
         if (resource.prepare(txId)) {
             log.write(new ParticipantLogRecord(
                     txId,
-                    ParticipantLogRecordType.VOTE_COMMIT,
+                    ParticipantLogRecordType.READY,
                     Instant.now()
             ));
 
@@ -126,7 +132,7 @@ public final class TwoPhaseCommitParticipant {
         } else {
             log.write(new ParticipantLogRecord(
                     txId,
-                    ParticipantLogRecordType.VOTE_ABORT,
+                    ParticipantLogRecordType.ABORT,
                     Instant.now()
             ));
 
@@ -147,7 +153,7 @@ public final class TwoPhaseCommitParticipant {
 
         log.write(new ParticipantLogRecord(
                 txId,
-                ParticipantLogRecordType.GLOBAL_ABORT,
+                ParticipantLogRecordType.ABORT,
                 Instant.now()
         ));
 
@@ -166,7 +172,7 @@ public final class TwoPhaseCommitParticipant {
 
         log.write(new ParticipantLogRecord(
                 txId,
-                ParticipantLogRecordType.GLOBAL_COMMIT,
+                ParticipantLogRecordType.COMMIT,
                 Instant.now()
         ));
 
@@ -186,7 +192,7 @@ public final class TwoPhaseCommitParticipant {
         // If READY and coordinator unreachable → abort
         log.write(new ParticipantLogRecord(
                 txId,
-                ParticipantLogRecordType.GLOBAL_ABORT,
+                ParticipantLogRecordType.ABORT,
                 Instant.now()
         ));
 
@@ -210,6 +216,6 @@ public final class TwoPhaseCommitParticipant {
 
     // Stub — wired by LocalNetwork later
     private void send(Message msg) {
-        // network.send(msg.to(), msg);
+        network.send(msg);
     }
 }

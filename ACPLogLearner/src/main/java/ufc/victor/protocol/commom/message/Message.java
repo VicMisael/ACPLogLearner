@@ -2,6 +2,7 @@ package ufc.victor.protocol.commom.message;
 
 
 import ufc.victor.protocol.commom.TransactionId;
+import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.node.NodeId;
 
 import java.time.Instant;
@@ -10,16 +11,16 @@ public final class Message {
 
     private final MessageType type;
     private final TransactionId transactionId;
-    private final NodeId from;
-    private final NodeId to;
+    private final Node from;
+    private final Node to;
     private final MessagePayload payload;
     private final Instant timestamp;
 
     private Message(
             MessageType type,
             TransactionId transactionId,
-            NodeId from,
-            NodeId to,
+            Node from,
+            Node to,
             MessagePayload payload
     ) {
         this.type = type;
@@ -33,8 +34,8 @@ public final class Message {
     public static Message of(
             MessageType type,
             TransactionId txId,
-            NodeId from,
-            NodeId to,
+            Node from,
+            Node to,
             MessagePayload payload
     ) {
         return new Message(type, txId, from, to, payload);
@@ -48,11 +49,11 @@ public final class Message {
         return transactionId;
     }
 
-    public NodeId from() {
+    public Node from() {
         return from;
     }
 
-    public NodeId to() {
+    public Node to() {
         return to;
     }
 

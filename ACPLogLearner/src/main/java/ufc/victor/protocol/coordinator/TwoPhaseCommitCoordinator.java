@@ -1,12 +1,13 @@
 package ufc.victor.protocol.coordinator;
 
+import ufc.victor.protocol.commom.MessageHandler;
+import ufc.victor.protocol.commom.Network;
 import ufc.victor.protocol.commom.Timer;
 import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
-import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
 import ufc.victor.protocol.coordinator.log.LogRecord;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
@@ -15,7 +16,7 @@ import java.time.Instant;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public final class TwoPhaseCommitCoordinator {
+public final class TwoPhaseCommitCoordinator implements MessageHandler {
 
     // ----------------------------
     // Valduriez coordinator states
@@ -29,18 +30,19 @@ public final class TwoPhaseCommitCoordinator {
     }
 
     private final TransactionId txId;
-    private final NodeId coordinatorId;
+    private final Node coordinatorId;
     private final Set<NodeStatus> participants;
 
     private final CoordinatorLogManager log;
     private final Timer timer;
+    private final Network network;
 
     public TwoPhaseCommitCoordinator(
             TransactionId txId,
-            NodeId coordinatorId,
+            Node coordinatorId,
             Set<Node> participants,
             CoordinatorLogManager log,
-            Timer timer
+            Timer timer, Network network
     ) {
         this.txId = txId;
         this.coordinatorId = coordinatorId;
@@ -50,6 +52,32 @@ public final class TwoPhaseCommitCoordinator {
 
         this.log = log;
         this.timer = timer;
+        this.network = network;
+    }
+
+    public void recover() {
+        State state = getState();
+
+        switch (state) {
+            case INIT -> {
+                // Nothing to do
+            }
+            case WAIT -> {
+                // Votes may be missing → start timeout
+                timer.set();
+            }
+            case COMMIT -> {
+                broadcast(MessageType.GLOBAL_COMMIT);
+                timer.set();
+            }
+            case ABORT -> {
+                broadcast(MessageType.GLOBAL_ABORT);
+                timer.set();
+            }
+            case FINISHED -> {
+                // Protocol complete
+            }
+        }
     }
 
 
@@ -129,7 +157,7 @@ public final class TwoPhaseCommitCoordinator {
      *   write abort
      *   send global-abort
      */
-    private void onVoteAbort(NodeId from) {
+    private void onVoteAbort(Node from) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.ABORTED);
@@ -151,7 +179,7 @@ public final class TwoPhaseCommitCoordinator {
      *      write commit
      *      send global-commit
      */
-    private void onVoteCommit(NodeId from) {
+    private void onVoteCommit(Node from) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.VOTED_COMMIT);
@@ -176,7 +204,7 @@ public final class TwoPhaseCommitCoordinator {
      *   else
      *      resend decision
      */
-    private void onAck(NodeId from) {
+    private void onAck(Node from) {
         State state = getState();
         if (state != State.COMMIT && state != State.ABORT) return;
 
@@ -236,9 +264,9 @@ public final class TwoPhaseCommitCoordinator {
         ));
     }
 
-    private void mark(NodeId id, NodeState newState) {
+    private void mark(Node node, NodeState newState) {
         participants.stream()
-                .filter(ns -> ns.node().id.equals(id))
+                .filter(ns -> ns.node().id.equals(node.id))
                 .forEach(ns -> {
                     if (ns.state().canTransitionTo(newState)) {
                         ns.setState(newState);
@@ -263,7 +291,7 @@ public final class TwoPhaseCommitCoordinator {
                     type,
                     txId,
                     coordinatorId,
-                    ns.node().id,
+                    ns.node(),
                     EmptyPayload.INSTANCE
             );
             send(msg);
@@ -280,7 +308,7 @@ public final class TwoPhaseCommitCoordinator {
                         decision,
                         txId,
                         coordinatorId,
-                        ns.node().id,
+                        ns.node(),
                         EmptyPayload.INSTANCE
                 ));
             }
@@ -290,6 +318,7 @@ public final class TwoPhaseCommitCoordinator {
 
     // Stub (LocalNetwork will call this)
     private void send(Message msg) {
-        // network.send(msg.to(), msg);
+
+        network.send(msg);
     }
 }
