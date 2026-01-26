@@ -8,6 +8,4 @@ public interface CoordinatorLogManager {
     void write(LogRecord record);
 
     List<LogRecord> read(TransactionId txId);
-
-    boolean contains(TransactionId txId, CoordinatorLogRecordType type);
 }
