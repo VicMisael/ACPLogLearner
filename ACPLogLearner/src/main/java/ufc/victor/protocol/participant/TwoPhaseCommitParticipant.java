@@ -1,14 +1,10 @@
 package ufc.victor.protocol.participant;
 
-import ufc.victor.protocol.commom.MessageHandler;
-import ufc.victor.protocol.commom.Network;
-import ufc.victor.protocol.commom.Timer;
-import ufc.victor.protocol.commom.TransactionId;
+import ufc.victor.protocol.commom.*;
 import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
-import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
 import ufc.victor.protocol.participant.log.ParticipantLogRecord;
 import ufc.victor.protocol.participant.log.ParticipantLogRecordType;
@@ -20,7 +16,7 @@ import static ufc.victor.protocol.commom.message.MessageType.VOTE_ABORT;
 import static ufc.victor.protocol.commom.message.MessageType.VOTE_COMMIT;
 
 
-public final class TwoPhaseCommitParticipant implements MessageHandler {
+public final class TwoPhaseCommitParticipant implements IMessageHandler, TimeoutHandler {
 
     // ----------------------------
     // Valduriez participant states
@@ -37,25 +33,25 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
     private final Node coordinatorId;
 
     private final ParticipantLogManager log;
-    private final Timer timer;
+    private final ITimer timer;
     private final TransactionalResource resource;
     private final Network network;
 
     public TwoPhaseCommitParticipant(
             TransactionId txId,
-            Node participantId,
-            Node coordinatorId,
+            Node participant,
+            Node coordinator,
             ParticipantLogManager log,
-            Timer timer,
+            ITimerFactory timerFactory,
             TransactionalResource resource, Network network
     ) {
         this.txId = txId;
-        this.participantId = participantId;
-        this.coordinatorId = coordinatorId;
+        this.participantId = participant;
+        this.coordinatorId = coordinator;
         this.log = log;
-        this.timer = timer;
         this.resource = resource;
         this.network = network;
+        this.timer = timerFactory.createTimer(this);
     }
 
 
@@ -64,9 +60,10 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
     // State derived ONLY from log (crash-safe)
     // =========================================================
     private State getState() {
-        ParticipantLogRecord last = log.read(txId).getLast();
+        ParticipantLogRecord last = log.getLast(txId);
 
         if (last == null) return State.INIT;
+
 
         return switch (last.type()) {
             case READY -> State.READY;
@@ -97,7 +94,7 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
     // Event: Timeout
     // =========================================================
     public void onTimeout() {
-        executeTerminationProtocol();
+        Terminate();
     }
 
     // =========================================================
@@ -148,9 +145,6 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
      *   abort the transaction
      */
     private void onGlobalAbort() {
-        State state = getState();
-        if (state == State.ABORT || state == State.COMMIT) return;
-
         log.write(new ParticipantLogRecord(
                 txId,
                 ParticipantLogRecordType.ABORT,
@@ -159,6 +153,7 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
 
         resource.abort(txId);
         send(MessageType.ACK);
+        timer.reset();
     }
 
     /**
@@ -168,7 +163,6 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
      *   commit the transaction
      */
     private void onGlobalCommit() {
-        if (getState() != State.READY) return;
 
         log.write(new ParticipantLogRecord(
                 txId,
@@ -177,7 +171,8 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
         ));
 
         resource.commit(txId);
-        send(MessageType.ACK);
+        send(MessageType.ACK); // Necessary for Coordinator Algo 5.6 "Case Ack"
+        timer.reset();
     }
 
     /**
@@ -185,19 +180,18 @@ public final class TwoPhaseCommitParticipant implements MessageHandler {
      * case Timeout do
      *   execute the termination protocol
      */
-    private void executeTerminationProtocol() {
-        if (getState() != State.READY) return;
+    private void Terminate() {
+        if (getState() == State.INIT) {
+            log.write(new ParticipantLogRecord(
+                    txId,
+                    ParticipantLogRecordType.ABORT,
+                    Instant.now()
+            ));
+        } else {
+            send(VOTE_COMMIT);
+            timer.reset();
+        }
 
-        // Conservative termination:
-        // If READY and coordinator unreachable → abort
-        log.write(new ParticipantLogRecord(
-                txId,
-                ParticipantLogRecordType.ABORT,
-                Instant.now()
-        ));
-
-        resource.abort(txId);
-        send(MessageType.ACK);
     }
 
     // =========================================================

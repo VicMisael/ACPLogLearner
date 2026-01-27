@@ -1,33 +1,42 @@
 package ufc.victor.localenv;
 
-import ufc.victor.protocol.commom.Timer;
+import ufc.victor.protocol.commom.TimeoutHandler;
+import ufc.victor.protocol.commom.ITimer;
 
-import java.util.function.Consumer;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
-public final class LocalTimer implements Timer {
+public final class LocalTimer implements ITimer {
 
-    private final Consumer<Void> onTimeout;
-    private boolean armed = false;
+    private  final TimeoutHandler handler;
+    public LocalTimer(TimeoutHandler handler) {
+        this.handler = handler;
+    }
 
-    public LocalTimer(Runnable onTimeout) {
-        this.onTimeout = v -> onTimeout.run();
+    private final ScheduledExecutorService scheduler =
+            Executors.newSingleThreadScheduledExecutor();
+
+    private ScheduledFuture<?> task;
+
+    @Override
+    public synchronized void set() {
+        reset();
+
+        task = scheduler.schedule(
+                handler::onTimeout,
+                1, // seconds (tune later)
+                TimeUnit.SECONDS
+        );
     }
 
     @Override
-    public void set() {
-        armed = true;
-    }
-
-    @Override
-    public void reset() {
-        armed = false;
-    }
-
-    // Manually triggered by the test harness / network
-    public void trigger() {
-        if (!armed) return;
-        armed = false;
-        onTimeout.accept(null);
+    public synchronized void reset() {
+        if (task != null) {
+            task.cancel(false);
+            task = null;
+        }
     }
 }
 

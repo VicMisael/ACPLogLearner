@@ -1,9 +1,6 @@
 package ufc.victor.protocol.coordinator;
 
-import ufc.victor.protocol.commom.MessageHandler;
-import ufc.victor.protocol.commom.Network;
-import ufc.victor.protocol.commom.Timer;
-import ufc.victor.protocol.commom.TransactionId;
+import ufc.victor.protocol.commom.*;
 import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
@@ -13,10 +10,11 @@ import ufc.victor.protocol.coordinator.log.LogRecord;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public final class TwoPhaseCommitCoordinator implements MessageHandler {
+public final class TwoPhaseCommitCoordinator implements IMessageHandler, TimeoutHandler {
 
     // ----------------------------
     // Valduriez coordinator states
@@ -34,7 +32,7 @@ public final class TwoPhaseCommitCoordinator implements MessageHandler {
     private final Set<NodeStatus> participants;
 
     private final CoordinatorLogManager log;
-    private final Timer timer;
+    private final ITimer timer;
     private final Network network;
 
     public TwoPhaseCommitCoordinator(
@@ -42,7 +40,8 @@ public final class TwoPhaseCommitCoordinator implements MessageHandler {
             Node coordinatorId,
             Set<Node> participants,
             CoordinatorLogManager log,
-            Timer timer, Network network
+            Network network,
+            ITimerFactory timerFactory
     ) {
         this.txId = txId;
         this.coordinatorId = coordinatorId;
@@ -51,8 +50,8 @@ public final class TwoPhaseCommitCoordinator implements MessageHandler {
                 .collect(Collectors.toSet());
 
         this.log = log;
-        this.timer = timer;
         this.network = network;
+        this.timer = timerFactory.createTimer(this);
     }
 
     public void recover() {
@@ -82,8 +81,9 @@ public final class TwoPhaseCommitCoordinator implements MessageHandler {
 
 
     private State getState() {
-        LogRecord last = log.read(txId).getLast();
+         LogRecord last = log.getLast(txId);
 
+                 //No logs written, which means the protocol has not started;
         if (last == null) return State.INIT;
 
         return switch (last.type()) {
@@ -220,21 +220,36 @@ public final class TwoPhaseCommitCoordinator implements MessageHandler {
             resendDecisionToMissing();
         }
     }
-
+    /**
+    Algorithm 5.8: 2PC Coordinator Terminate
+            begin
+if in WAIT state then {coordinator is in ABORT state}
+    write abort record in the log
+            send “Global-abort” message to all the participants
+else {coordinator is in COMMIT state}
+    check for the last log record
+if last log record = abort then
+    send “Global-abort” to all participants that have not responded
+else
+    send “Global-commit” to all the participants that have not responded
+    end if
+    end if
+    set timer
+    end*/
     private void Terminate() {
-        LogRecord lastRecord = log.read(txId).getLast();
-
-        if (lastRecord == null || lastRecord.type() == CoordinatorLogRecordType.BEGIN_COMMIT) {
-            // INIT or WAIT → unilateral abort
+        var state = getState();
+        if (state == State.WAIT){
             writeGlobalAbort();
             broadcast(MessageType.GLOBAL_ABORT);
-        } else if (lastRecord.type() == CoordinatorLogRecordType.GLOBAL_ABORT) {
-            broadcast(MessageType.GLOBAL_ABORT);
-        } else if (lastRecord.type() == CoordinatorLogRecordType.GLOBAL_COMMIT) {
-            broadcast(MessageType.GLOBAL_COMMIT);
+        }else{
+            var last = log.getLast(txId);
+            if (last != null){
+                resendDecisionToMissing();
+            }
+            //Last log will never be null since
         }
-
         timer.set();
+
     }
 
 

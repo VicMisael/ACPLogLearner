@@ -21,6 +21,18 @@ public class InMemoryCoordinatorLogManager implements CoordinatorLogManager {
 
     @Override
     public List<LogRecord> read(TransactionId txId) {
+        if (!logs.containsKey(txId)) {
+            return new ArrayList<>();
+        }
         return logs.get(txId);
+    }
+
+    @Override
+    public LogRecord getLast(TransactionId txId) {
+        var logs = read(txId);
+        if(logs.isEmpty()) {
+            return null;
+        }
+        return logs.getLast();
     }
 }

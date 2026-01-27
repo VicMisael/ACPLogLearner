@@ -1,6 +1,6 @@
 package ufc.victor.protocol.coordinator.node;
 
-public abstract class NodeId {
+public  class NodeId {
     private final String id;
 
     public NodeId(String id) {
