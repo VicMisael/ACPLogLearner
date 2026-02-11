@@ -1,6 +1,6 @@
 package ufc.victor.localenv;
 
-import ufc.victor.protocol.commom.IMessageHandler;
+import ufc.victor.protocol.abstractions.IMessageHandler;
 import ufc.victor.protocol.commom.Network;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.coordinator.node.NodeId;

@@ -1,7 +1,7 @@
 package ufc.victor.protocol.participant;
 
+import ufc.victor.protocol.abstractions.IParticipant;
 import ufc.victor.protocol.commom.*;
-import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
@@ -16,7 +16,7 @@ import static ufc.victor.protocol.commom.message.MessageType.VOTE_ABORT;
 import static ufc.victor.protocol.commom.message.MessageType.VOTE_COMMIT;
 
 
-public final class TwoPhaseCommitParticipant implements IMessageHandler, TimeoutHandler {
+public final class TwoPhaseCommitParticipant implements IParticipant {
 
     // ----------------------------
     // Valduriez participant states
@@ -51,7 +51,7 @@ public final class TwoPhaseCommitParticipant implements IMessageHandler, Timeout
         this.log = log;
         this.resource = resource;
         this.network = network;
-        this.timer = timerFactory.createTimer(this);
+        this.timer = timerFactory.createOrGetTimer(this);
     }
 
 
@@ -202,8 +202,7 @@ public final class TwoPhaseCommitParticipant implements IMessageHandler, Timeout
                 type,
                 txId,
                 participantId,
-                coordinatorId,
-                EmptyPayload.INSTANCE
+                coordinatorId
         );
         send(msg);
     }

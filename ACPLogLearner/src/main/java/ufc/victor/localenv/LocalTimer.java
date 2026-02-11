@@ -1,6 +1,6 @@
 package ufc.victor.localenv;
 
-import ufc.victor.protocol.commom.TimeoutHandler;
+import ufc.victor.protocol.abstractions.ITimeoutHandler;
 import ufc.victor.protocol.commom.ITimer;
 
 import java.util.concurrent.Executors;
@@ -10,8 +10,8 @@ import java.util.concurrent.TimeUnit;
 
 public final class LocalTimer implements ITimer {
 
-    private  final TimeoutHandler handler;
-    public LocalTimer(TimeoutHandler handler) {
+    private  final ITimeoutHandler handler;
+    public LocalTimer(ITimeoutHandler handler) {
         this.handler = handler;
     }
 

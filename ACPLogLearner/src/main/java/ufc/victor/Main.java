@@ -1,8 +1,8 @@
 package ufc.victor;
 
 import ufc.victor.localenv.*;
+import ufc.victor.protocol.abstractions.ITimeoutHandler;
 import ufc.victor.protocol.commom.*;
-import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.TwoPhaseCommitCoordinator;
@@ -17,46 +17,10 @@ import java.util.Set;
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
 // click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 public class Main {
-    private static class FakeResources implements TransactionalResource{
-
-        @Override
-        public boolean prepare(TransactionId txId) {
-//            sleep(3500);
-            return true;
-        }
-
-        @Override
-        public void commit(TransactionId txId) {
-            System.out.println(this.getClass().getName() +"commited"+txId);
-        }
-
-        @Override
-        public void abort(TransactionId txId) {
-            System.out.println(this.getClass().getName() +"aborted"+txId);
-        }
-    }
-
-    private static class AbortResource implements TransactionalResource{
-        @Override
-        public boolean prepare(TransactionId txId) {
-            sleep(5000);
-            return false;
-        }
-
-        @Override
-        public void commit(TransactionId txId) {
-            System.out.println(this.getClass().getName() + "commited"+txId);
-        }
-
-        @Override
-        public void abort(TransactionId txId) {
-            System.out.println(this.getClass().getName() +"aborted"+txId);
-        }
-    }
 
     private static class LocalTimerFactory implements ITimerFactory{
         @Override
-        public ITimer createTimer(TimeoutHandler timeoutHandler) {
+        public ITimer createOrGetTimer(ITimeoutHandler timeoutHandler) {
             return new LocalTimer(timeoutHandler);
         }
     }
@@ -92,8 +56,8 @@ public class Main {
         // -----------------------------
         // Resources
         // -----------------------------
-        TransactionalResource r1 = new FakeResources();
-        TransactionalResource r2 = new FakeResources();
+        TransactionalResource r1 = new FakeResource();
+        TransactionalResource r2 = new FakeResource();
         TransactionalResource r3 = new AbortResource();
 
         // -----------------------------
@@ -161,15 +125,12 @@ public class Main {
                         MessageType.COMMIT_REQUEST,
                         txId,
                         coordinatorNode,
-                        coordinatorNode,
-                        EmptyPayload.INSTANCE
-                )
+                        coordinatorNode )
         );
 
         // -----------------------------
         // Wait for async timers/messages
         // -----------------------------
-        sleep(1000);
 
         // -----------------------------
         // Dump logs
@@ -188,9 +149,4 @@ public class Main {
         return ;
     }
 
-    private static void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException ignored) {}
-    }
 }

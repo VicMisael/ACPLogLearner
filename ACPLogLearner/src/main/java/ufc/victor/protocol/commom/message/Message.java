@@ -3,7 +3,6 @@ package ufc.victor.protocol.commom.message;
 
 import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.coordinator.node.Node;
-import ufc.victor.protocol.coordinator.node.NodeId;
 
 import java.time.Instant;
 
@@ -20,14 +19,13 @@ public final class Message {
             MessageType type,
             TransactionId transactionId,
             Node from,
-            Node to,
-            MessagePayload payload
+            Node to
     ) {
         this.type = type;
         this.transactionId = transactionId;
         this.from = from;
         this.to = to;
-        this.payload = payload;
+        this.payload = EmptyPayload.INSTANCE;
         this.timestamp = Instant.now();
     }
 
@@ -35,10 +33,8 @@ public final class Message {
             MessageType type,
             TransactionId txId,
             Node from,
-            Node to,
-            MessagePayload payload
-    ) {
-        return new Message(type, txId, from, to, payload);
+            Node to) {
+        return new Message(type, txId, from, to);
     }
 
     public MessageType type() {

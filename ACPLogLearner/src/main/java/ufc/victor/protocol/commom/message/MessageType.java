@@ -3,7 +3,6 @@ package ufc.victor.protocol.commom.message;
 public enum MessageType {
     // Client / Scheduler
     COMMIT_REQUEST,
-    ABORT_REQUEST,
 
     // Phase 1
     PREPARE,
@@ -15,9 +14,5 @@ public enum MessageType {
     GLOBAL_ABORT,
 
     // Completion
-    ACK,
-
-    // Recovery / termination
-    DECISION_REQUEST,
-    DECISION_RESPONSE
+    ACK
 }

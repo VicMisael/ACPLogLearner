@@ -1,7 +1,7 @@
 package ufc.victor.protocol.coordinator;
 
+import ufc.victor.protocol.abstractions.ICoordinator;
 import ufc.victor.protocol.commom.*;
-import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
@@ -10,11 +10,10 @@ import ufc.victor.protocol.coordinator.log.LogRecord;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public final class TwoPhaseCommitCoordinator implements IMessageHandler, TimeoutHandler {
+public final class TwoPhaseCommitCoordinator implements ICoordinator {
 
     // ----------------------------
     // Valduriez coordinator states
@@ -51,7 +50,7 @@ public final class TwoPhaseCommitCoordinator implements IMessageHandler, Timeout
 
         this.log = log;
         this.network = network;
-        this.timer = timerFactory.createTimer(this);
+        this.timer = timerFactory.createOrGetTimer(this);
     }
 
     public void recover() {
@@ -306,9 +305,7 @@ else
                     type,
                     txId,
                     coordinatorId,
-                    ns.node(),
-                    EmptyPayload.INSTANCE
-            );
+                    ns.node());
             send(msg);
         }
     }
@@ -323,8 +320,7 @@ else
                         decision,
                         txId,
                         coordinatorId,
-                        ns.node(),
-                        EmptyPayload.INSTANCE
+                        ns.node()
                 ));
             }
         }
