@@ -1,8 +1,14 @@
 package ufc.victor;
 
 import ufc.victor.localenv.*;
+import ufc.victor.localenv.actors.ActorNode;
+import ufc.victor.localenv.actors.ActorTimerFactory;
+import ufc.victor.localenv.actors.SimulationMessageBus;
+import ufc.victor.protocol.abstractions.ICoordinator;
+import ufc.victor.protocol.abstractions.IParticipant;
 import ufc.victor.protocol.abstractions.ITimeoutHandler;
 import ufc.victor.protocol.commom.*;
+import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.TwoPhaseCommitCoordinator;
@@ -14,139 +20,187 @@ import ufc.victor.protocol.participant.log.ParticipantLogManager;
 
 import java.util.Set;
 
-//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 public class Main {
 
-    private static class LocalTimerFactory implements ITimerFactory{
+    // ----------------------------------------------------------
+    // MOCK RESOURCES (Your Database Stubs)
+    // ----------------------------------------------------------
+    private static class FakeResource implements TransactionalResource {
+        private final String name;
+        public FakeResource(String name) { this.name = name; }
+
         @Override
-        public ITimer createOrGetTimer(ITimeoutHandler timeoutHandler) {
-            return new LocalTimer(timeoutHandler);
+        public boolean prepare(TransactionId txId) {
+            // Simulate disk I/O latency
+            sleep(50);
+            return true; // Vote COMMIT
+        }
+
+        @Override
+        public void commit(TransactionId txId) {
+            System.out.println("  [" + name + "] DB COMMITTED " + txId);
+        }
+
+        @Override
+        public void abort(TransactionId txId) {
+            System.out.println("  [" + name + "] DB ABORTED " + txId);
         }
     }
 
+    private static class SlowResource implements TransactionalResource {
+        @Override
+        public boolean prepare(TransactionId txId) {
+            System.out.println("  [SlowDB] Disk spin-up...");
+            sleep(9000); // Takes 4s to vote (Simulates a Straggler)
+            return true;
+        }
 
+        @Override
+        public void commit(TransactionId txId) { System.out.println("  [SlowDB] COMMITTED"); }
+        @Override
+        public void abort(TransactionId txId) { System.out.println("  [SlowDB] ABORTED"); }
+    }
+
+    // ----------------------------------------------------------
+    // MAIN SIMULATION
+    // ----------------------------------------------------------
     public static void main(String[] args) {
-        // -----------------------------
-        // Infrastructure
-        // -----------------------------
-        Network network = new LocalNetwork();
-        ITimerFactory timerFactory = new LocalTimerFactory();
 
+        System.out.println("=== INITIALIZING DISTRIBUTED SYSTEM ===");
+
+        // 1. ENVIRONMENT ( The Internet )
+        // Latency: 10ms to 50ms (Simulating a WAN)
+        SimulationMessageBus network = new SimulationMessageBus(10, 50);
         TransactionId txId = TransactionId.newTransaction();
 
 
-        // -----------------------------
-        // Nodes
-        // -----------------------------
-        LocalNode coordinatorNode = new LocalNode(new NodeId("C"));
-        LocalNode p1Node = new LocalNode(new NodeId("P1"));
-        LocalNode p2Node = new LocalNode(new NodeId("P2"));
-        LocalNode p3Node = new LocalNode(new NodeId("P3"));
+        // 2. HARDWARE ( The Servers / Actors )
+        // We create the physical nodes first so we can link them to network & timers
+        NodeId cId = new NodeId("COORD");
+        NodeId p1Id = new NodeId("P1");
+        NodeId p2Id = new NodeId("P2");
+        NodeId p3Id = new NodeId("P3"); // The Straggler
+
+        ActorNode coordActor = new ActorNode(cId);
+        ActorNode p1Actor = new ActorNode(p1Id);
+        ActorNode p2Actor = new ActorNode(p2Id);
+        ActorNode p3Actor = new ActorNode(p3Id);
+
+        // Plug servers into the network switch
+        network.register(cId, coordActor);
+        network.register(p1Id, p1Actor);
+        network.register(p2Id, p2Actor);
+        network.register(p3Id, p3Actor);
 
 
-        // -----------------------------
-        // Logs
-        // -----------------------------
-        CoordinatorLogManager coordinatorLog = new InMemoryCoordinatorLogManager();
+        // 3. INFRASTRUCTURE ( Logs & Timers )
+        // Each node gets its own Log Manager (InMemory for now)
+        CoordinatorLogManager cLog = new InMemoryCoordinatorLogManager();
         ParticipantLogManager p1Log = new InMemoryParticipantLogManager();
         ParticipantLogManager p2Log = new InMemoryParticipantLogManager();
         ParticipantLogManager p3Log = new InMemoryParticipantLogManager();
 
-        // -----------------------------
-        // Resources
-        // -----------------------------
-        TransactionalResource r1 = new FakeResource();
-        TransactionalResource r2 = new FakeResource();
-        TransactionalResource r3 = new AbortResource();
-
-        // -----------------------------
-        // Protocol instances
-        // -----------------------------
+        // CRITICAL: Each node gets a TimerFactory bound to its specific Actor
+        ITimerFactory cTimerFactory = new ActorTimerFactory(coordActor);
+        ITimerFactory p1TimerFactory = new ActorTimerFactory(p1Actor);
+        ITimerFactory p2TimerFactory = new ActorTimerFactory(p2Actor);
+        ITimerFactory p3TimerFactory = new ActorTimerFactory(p3Actor);
 
 
-        TwoPhaseCommitParticipant p1 =
-                new TwoPhaseCommitParticipant(
-                        txId,
-                        p1Node,
-                        coordinatorNode,
-                        p1Log,
-                        timerFactory,
-                        r1,
-                        network
-                );
+        // 4. SOFTWARE ( The Protocol Logic )
+        // We instantiate the logic, injecting the specific infrastructure for each node
 
-        TwoPhaseCommitParticipant p2 =
-                new TwoPhaseCommitParticipant(
-                        txId,
-                        p2Node,
-                        coordinatorNode,
-                        p2Log,
-                        timerFactory,
-                        r2,
-                        network
-                );
+        // Data Objects for logic identification
+        LocalNode coordNode = new LocalNode(cId);
+        LocalNode p1Node = new LocalNode(p1Id);
+        LocalNode p2Node = new LocalNode(p2Id);
+        LocalNode p3Node = new LocalNode(p3Id);
 
-        TwoPhaseCommitParticipant p3 = new TwoPhaseCommitParticipant(
+        // -- Coordinator Logic --
+        ICoordinator coordLogic = new TwoPhaseCommitCoordinator(
                 txId,
-                p3Node,
-                coordinatorNode,
-                p3Log,
-                timerFactory,
-                r3,
-                network
+                coordNode,
+                Set.of(p1Node, p2Node, p3Node), // The cluster membership
+                cLog,
+                network,
+                cTimerFactory
         );
 
-        TwoPhaseCommitCoordinator coordinator =
-                new TwoPhaseCommitCoordinator(
-                        txId,
-                        coordinatorNode,
-                        Set.of(p1Node, p2Node,p3Node),
-                        coordinatorLog,
-                        network,
-                        timerFactory
-                );
-
-
-        // -----------------------------
-        // Network registration
-        // -----------------------------
-        network.register(coordinatorNode.id, coordinator);
-        network.register(p1Node.id, p1);
-        network.register(p2Node.id, p2);
-        network.register(p3Node.id, p3);
-
-        // -----------------------------
-        // Start 2PC
-        // -----------------------------
-        System.out.println("=== BEGIN 2PC ===");
-        coordinator.onMessage(
-                Message.of(
-                        MessageType.COMMIT_REQUEST,
-                        txId,
-                        coordinatorNode,
-                        coordinatorNode )
+        // -- Participant Logic --
+        IParticipant p1Logic = new TwoPhaseCommitParticipant(
+                txId, p1Node, coordNode, p1Log, p1TimerFactory, new FakeResource("DB-1"), network
         );
 
-        // -----------------------------
-        // Wait for async timers/messages
-        // -----------------------------
+        IParticipant p2Logic = new TwoPhaseCommitParticipant(
+                txId, p2Node, coordNode, p2Log, p2TimerFactory, new FakeResource("DB-2"), network
+        );
 
-        // -----------------------------
-        // Dump logs
-        // -----------------------------
-        System.out.println("\n=== COORDINATOR LOG ===");
-        coordinatorLog.read(txId).forEach(System.out::println);
+        // P3 is the "Bad Node" (Slow Resource)
+        IParticipant p3Logic = new TwoPhaseCommitParticipant(
+                txId, p3Node, coordNode, p3Log, p3TimerFactory, new SlowResource(), network
+        );
 
-        System.out.println("\n=== PARTICIPANT P1 LOG ===");
+
+        // 5. INSTALLATION ( Loading OS )
+        // Bind the logic to the physical actors
+        coordActor.setProtocolLogic(coordLogic);
+        p1Actor.setProtocolLogic(p1Logic);
+        p2Actor.setProtocolLogic(p2Logic);
+        p3Actor.setProtocolLogic(p3Logic);
+
+
+        // 6. BOOT SEQUENCE
+        System.out.println(">>> Powering on nodes...");
+        coordActor.start();
+        p1Actor.start();
+        p2Actor.start();
+        p3Actor.start();
+
+
+        // 7. EXECUTION ( Run Experiment )
+        System.out.println(">>> Client sends COMMIT_REQUEST to Coordinator...");
+
+        // We inject the start message directly into the Coordinator's inbox
+        Message startMsg = Message.of(
+                MessageType.COMMIT_REQUEST,
+                txId,
+                coordNode, // From (Self/Client)
+                coordNode
+        );
+
+        network.send(startMsg); // Or coordActor.onMessage(startMsg);
+
+
+        // 8. OBSERVATION
+        // We wait long enough for the slow node (4s) + network delay
+        System.out.println(">>> Simulation running (Waiting 6s for completion)...");
+
+
+        // 9. SHUTDOWN & REPORT
+        System.out.println(">>> Shutting down...");
+        network.shutdown(); // Stops the message bus threads
+        coordActor.stop();
+        p1Actor.stop();
+        p2Actor.stop();
+        p3Actor.stop();
+
+        System.out.println("\n=== EXPERIMENT REPORT ===");
+
+        System.out.println("--- Coordinator Log ---");
+        cLog.read(txId).forEach(System.out::println);
+
+        System.out.println("\n--- P1 Log (Fast) ---");
         p1Log.read(txId).forEach(System.out::println);
 
-        System.out.println("\n=== PARTICIPANT P2 LOG ===");
-        p2Log.read(txId).forEach(System.out::println);
+        System.out.println("\n--- P2 Log (Fast) ---");
+        p1Log.read(txId).forEach(System.out::println);
 
-        System.out.println("\n=== PARTICIPANT P3 LOG ===");
-            p3Log.read(txId).forEach(System.out::println);
-        return ;
+        System.out.println("\n--- P3 Log (Straggler) ---");
+        p3Log.read(txId).forEach(System.out::println);
     }
 
+    // Helper for sleep
+    private static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
 }

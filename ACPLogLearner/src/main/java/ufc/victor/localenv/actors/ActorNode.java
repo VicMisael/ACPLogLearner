@@ -14,7 +14,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class ActorNode implements Runnable {
+public final class ActorNode implements IMessageHandler,Runnable {
 
     private final NodeId id;
 

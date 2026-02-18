@@ -10,16 +10,13 @@ import java.util.concurrent.*;
 
 public class SimulationMessageBus implements Network {
 
-    // 1. REGISTRY
-    // We map IDs to handlers. In your case, the handler IS the ActorNode.
+
     private final Map<NodeId, IMessageHandler> routes = new ConcurrentHashMap<>();
 
-    // 2. SIMULATION ENGINE
-    // Handles the "travel time" of packets so they don't arrive instantly
+
     private final ScheduledExecutorService scheduler =
             Executors.newScheduledThreadPool(4, r -> new Thread(r, "Sim-Net-Transport"));
 
-    // 3. CONFIGURATION (Latency)
     private final int minLatencyMs;
     private final int maxLatencyMs;
 
@@ -39,6 +36,13 @@ public class SimulationMessageBus implements Network {
 
     @Override
     public void send(Message msg) {
+        // SAFETY CHECK: Is the network plugged in?
+        if (scheduler.isShutdown()) {
+            // Silently drop, or log a warning. Do not crash.
+            // System.out.println("[Network] Dropped packet (Network Down): " + msg.type());
+            return;
+        }
+
         NodeId targetId = msg.to().id;
         IMessageHandler target = routes.get(targetId);
 
@@ -47,20 +51,19 @@ public class SimulationMessageBus implements Network {
             return;
         }
 
-        // 1. Calculate Wire Time (Latency)
-        // This is crucial for your thesis to simulate "Slow Networks"
         long latency = ThreadLocalRandom.current().nextInt(minLatencyMs, maxLatencyMs + 1);
 
-        // 2. Schedule Delivery (Async)
-        // We do NOT call target.onMessage() immediately. We wait.
-        scheduler.schedule(() -> {
-            try {
-                // 3. Physical Delivery
-                target.onMessage(msg);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }, latency, TimeUnit.MILLISECONDS);
+        try {
+            scheduler.schedule(() -> {
+                try {
+                    target.onMessage(msg);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }, latency, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // Double-check catch in case of race condition right at the 'schedule' call
+        }
     }
 
     // --------------------------------------------------------
