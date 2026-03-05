@@ -1,7 +1,10 @@
 package ufc.victor.protocol.participant;
 
 import ufc.victor.protocol.abstractions.IParticipant;
-import ufc.victor.protocol.commom.*;
+import ufc.victor.protocol.commom.ITimer;
+import ufc.victor.protocol.commom.ITimerFactory;
+import ufc.victor.protocol.commom.Network;
+import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
@@ -9,16 +12,12 @@ import ufc.victor.protocol.participant.log.ParticipantLogManager;
 import ufc.victor.protocol.participant.log.ParticipantLogRecord;
 import ufc.victor.protocol.participant.log.ParticipantLogRecordType;
 
-
 import java.time.Instant;
 
 import static ufc.victor.protocol.commom.message.MessageType.VOTE_ABORT;
 import static ufc.victor.protocol.commom.message.MessageType.VOTE_COMMIT;
 
-
-public final class TwoPhaseCommitParticipant implements IParticipant {
-
-
+public final class TwoPhaseCommitPresumedAbortParticipant implements IParticipant {
 
     // ----------------------------
     // Valduriez participant states
@@ -39,7 +38,7 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
     private final TransactionalResource resource;
     private final Network network;
 
-    public TwoPhaseCommitParticipant(
+    public TwoPhaseCommitPresumedAbortParticipant(
             TransactionId txId,
             Node participant,
             Node coordinator,
@@ -56,21 +55,24 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         this.timer = timerFactory.createOrGetTimer(this);
     }
 
-
     @Override
     public void recover() {
         State state = getState();
 
-        switch (state){
-            case INIT:
-                abort();
-                break;
-                case READY:
-                    Terminate();
-                    break;
-            default:
-                //nothing
-
+        switch (state) {
+            case INIT -> {
+                // PrA Rule: If we crashed before logging READY, we can unilaterally abort.
+                // The coordinator will presume abort anyway if it doesn't hear from us.
+                voteAbort();
+            }
+            case READY -> {
+                // We voted YES but crashed before receiving the decision.
+                // We are blocked. We must ask the coordinator.
+                Terminate();
+            }
+            default -> {
+                // COMMIT or ABORT: The transaction is already finished locally.
+            }
         }
     }
 
@@ -81,7 +83,6 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         ParticipantLogRecord last = log.getLast(txId);
 
         if (last == null) return State.INIT;
-
 
         return switch (last.type()) {
             case READY -> State.READY;
@@ -95,16 +96,10 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
     // =========================================================
     public void onMessage(Message msg) {
         switch (msg.type()) {
-
-            case PREPARE_2PC -> onPrepare();
-
+            case PREPARE_2PC_PAB -> onPrepare();
             case GLOBAL_ABORT -> onGlobalAbort();
-
             case GLOBAL_COMMIT -> onGlobalCommit();
-
-            default -> {
-                // ignore
-            }
+            default -> { /* ignore */ }
         }
     }
 
@@ -116,33 +111,21 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
     }
 
     // =========================================================
-    // Valduriez handlers
+    // Valduriez handlers (Adapted for PrA)
     // =========================================================
 
-    /**
-     * Valduriez:
-     * case Prepare do
-     *   if ready to commit then
-     *      write ready
-     *      send Vote-commit
-     *      set timer
-     *   else
-     *      write abort
-     *      send Vote-abort
-     *      abort transaction
-     */
     private void onPrepare() {
         if (getState() != State.INIT) return;
 
         if (resource.prepare(txId)) {
-            commit();
-
+            voteCommit();
         } else {
-            abort();
+            voteAbort();
         }
     }
 
-    private void commit() {
+    private void voteCommit() {
+        // MUST be force-written to disk
         log.write(new ParticipantLogRecord(
                 txId,
                 ParticipantLogRecordType.READY,
@@ -153,24 +136,23 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         timer.set();
     }
 
-    private void abort() {
+    private void voteAbort() {
+        // PrA Optimization: This log does NOT need to be force-written.
         log.write(new ParticipantLogRecord(
                 txId,
                 ParticipantLogRecordType.ABORT,
                 Instant.now()
         ));
 
-        send(VOTE_ABORT);
         resource.abort(txId);
+        send(VOTE_ABORT);
+        // Protocol finished locally. No timer needed.
     }
 
-    /**
-     * Valduriez:
-     * case Global-abort do
-     *   write abort
-     *   abort the transaction
-     */
     private void onGlobalAbort() {
+        if (getState() == State.ABORT || getState() == State.INIT) return;
+
+        // PrA Optimization: This log does NOT need to be force-written.
         log.write(new ParticipantLogRecord(
                 txId,
                 ParticipantLogRecordType.ABORT,
@@ -178,18 +160,15 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         ));
 
         resource.abort(txId);
-        send(MessageType.ACK);
+
+        // PrA RULE: Do NOT send ACK. The coordinator does not expect it and has already forgotten the transaction.
         timer.reset();
     }
 
-    /**
-     * Valduriez:
-     * case Global-commit do
-     *   write commit
-     *   commit the transaction
-     */
     private void onGlobalCommit() {
+        if (getState() == State.COMMIT) return;
 
+        // MUST be force-written to disk
         log.write(new ParticipantLogRecord(
                 txId,
                 ParticipantLogRecordType.COMMIT,
@@ -197,27 +176,23 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         ));
 
         resource.commit(txId);
-        send(MessageType.ACK); // Necessary for Coordinator Algo 5.6 "Case Ack"
+
+        // PrA RULE: We MUST send ACK for Global-Commit.
+        send(MessageType.ACK);
         timer.reset();
     }
 
-    /**
-     * Valduriez:
-     * case Timeout do
-     *   execute the termination protocol
-     */
     private void Terminate() {
         if (getState() == State.INIT) {
-            log.write(new ParticipantLogRecord(
-                    txId,
-                    ParticipantLogRecordType.ABORT,
-                    Instant.now()
-            ));
-        } else {
+            // Timed out waiting for PREPARE. Safe to unilaterally abort.
+            voteAbort();
+        } else if (getState() == State.READY) {
+            // Send VOTE_COMMIT again as a way to query the coordinator (or use a STATUS_REQUEST).
             send(VOTE_COMMIT);
-            timer.reset();
-        }
 
+            // CRITICAL FIX: Restart the timer! If we reset it, we stop waiting.
+            timer.set();
+        }
     }
 
     // =========================================================
@@ -233,7 +208,6 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
         send(msg);
     }
 
-    // Stub — wired by LocalNetwork later
     private void send(Message msg) {
         network.send(msg);
     }

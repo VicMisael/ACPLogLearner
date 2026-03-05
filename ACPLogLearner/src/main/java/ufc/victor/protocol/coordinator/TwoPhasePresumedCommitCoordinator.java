@@ -1,29 +1,32 @@
 package ufc.victor.protocol.coordinator;
 
 import ufc.victor.protocol.abstractions.ICoordinator;
-import ufc.victor.protocol.commom.*;
+import ufc.victor.protocol.commom.ITimer;
+import ufc.victor.protocol.commom.ITimerFactory;
+import ufc.victor.protocol.commom.Network;
+import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
-import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
-import ufc.victor.protocol.coordinator.log.LogRecord;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
+import ufc.victor.protocol.coordinator.log.LogRecord;
+import ufc.victor.protocol.coordinator.node.Node;
 
 import java.time.Instant;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public final class TwoPhaseCommitCoordinator implements ICoordinator {
+public final class TwoPhasePresumedCommitCoordinator implements ICoordinator {
 
     // ----------------------------
-    // Valduriez coordinator states
+    // States adapted for PrC
     // ----------------------------
     private enum State {
         INIT,
+        COLLECTING, // Coordinator force-writes participant list
         WAIT,
-        COMMIT,
-        ABORT,
-        FINISHED
+        ABORT,      // Only Aborts wait for ACKs
+        FINISHED    // Reached immediately on Commit, or after ACKs on Abort
     }
 
     private final TransactionId txId;
@@ -34,7 +37,7 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
     private final ITimer timer;
     private final Network network;
 
-    public TwoPhaseCommitCoordinator(
+    public TwoPhasePresumedCommitCoordinator(
             TransactionId txId,
             Node coordinatorId,
             Set<Node> participants,
@@ -57,39 +60,34 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
         State state = getState();
 
         switch (state) {
-            case INIT -> {
+            case INIT, FINISHED -> {
                 // Nothing to do
             }
-            case WAIT -> {
-                // Votes may be missing → start timeout
-                timer.set();
-            }
-            case COMMIT -> {
-                broadcast(MessageType.GLOBAL_COMMIT);
-                timer.set();
+            case COLLECTING, WAIT -> {
+                // PrC Rule: If we crash after writing the collecting record but before deciding,
+                // we must abort upon recovery to prevent inconsistency.
+                writeGlobalAbort();
+                broadcast(MessageType.GLOBAL_ABORT);
+                timer.set(); // We expect ACKs for aborts
             }
             case ABORT -> {
-                broadcast(MessageType.GLOBAL_ABORT);
+                // Crashed while waiting for Abort ACKs. Must resend.
+                resendDecisionToMissing();
                 timer.set();
-            }
-            case FINISHED -> {
-                // Protocol complete
             }
         }
     }
 
-
     private State getState() {
-         LogRecord last = log.getLast(txId);
+        LogRecord last = log.getLast(txId);
 
-                 //No logs written, which means the protocol has not started;
         if (last == null) return State.INIT;
 
         return switch (last.type()) {
-            case BEGIN_COMMIT -> State.WAIT;
+            case BEGIN_COMMIT -> State.WAIT; // Acts as the collecting record
             case GLOBAL_ABORT -> State.ABORT;
-            case GLOBAL_COMMIT -> State.COMMIT;
-            case END_TRANSACTION -> State.FINISHED; // protocol finished
+            // In PrC, GLOBAL_COMMIT or END_TRANSACTION means we are completely done.
+            case GLOBAL_COMMIT, END_TRANSACTION -> State.FINISHED;
         };
     }
 
@@ -98,24 +96,17 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
     // =========================================================
     public void onMessage(Message msg) {
         switch (msg.type()) {
-
             case COMMIT_REQUEST -> onCommitRequest();
-
             case VOTE_ABORT -> onVoteAbort(msg.from());
-
             case VOTE_COMMIT -> onVoteCommit(msg.from());
-
             case ACK -> onAck(msg.from());
-
-            default -> {
-                // ignore
-            }
+            default -> { /* ignore */ }
         }
     }
 
     private MessageType globalDecision() {
         return switch (getState()) {
-            case COMMIT -> MessageType.GLOBAL_COMMIT;
+            // We only return GLOBAL_ABORT here because the COMMIT state doesn't wait for ACKs
             case ABORT -> MessageType.GLOBAL_ABORT;
             default -> null;
         };
@@ -129,132 +120,88 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
     }
 
     // =========================================================
-    // Handlers (Valduriez mapping)
+    // Handlers
     // =========================================================
 
-    /**
-     * Valduriez:
-     * case Commit do
-     *   write begin_commit
-     *   send PREPARE
-     *   set timer
-     */
     private void onCommitRequest() {
         if (getState() != State.INIT) return;
 
+        // PrC RULE: Force-write the collecting record BEFORE sending prepare messages.
+        // We use BEGIN_COMMIT to represent this.
         writeBeginCommit();
 
-        broadcast(MessageType.PREPARE_2PC);
+        broadcast(MessageType.PREPARE_2PC_PCO);
         timer.set();
     }
 
-
-
-    /**
-     * Valduriez:
-     * case Vote-abort do
-     *   write abort
-     *   send global-abort
-     */
     private void onVoteAbort(Node from) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.ABORTED);
 
-
         writeGlobalAbort();
-
         broadcast(MessageType.GLOBAL_ABORT);
+
+        // PrC RULE: We DO expect ACKs for aborts.
         timer.set();
     }
 
-
-
-    /**
-     * Valduriez:
-     * case Vote-commit do
-     *   update list
-     *   if all answered then
-     *      write commit
-     *      send global-commit
-     */
     private void onVoteCommit(Node from) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.VOTED_COMMIT);
 
         if (allVotedCommit()) {
-
+            // Write the commit record (can be async)
             WriteGlobalCommit();
-
             broadcast(MessageType.GLOBAL_COMMIT);
-            timer.set();
+
+            // PrC RULE: Do NOT set the timer. We do not expect ACKs for commits.
+            // The coordinator forgets the transaction immediately.
         }
     }
 
-
-
-    /**
-     * Valduriez:
-     * case Ack do
-     *   update acknowledgements
-     *   if all acknowledged then
-     *      write end_of_transaction
-     *   else
-     *      resend decision
-     */
     private void onAck(Node from) {
         State state = getState();
-        if (state != State.COMMIT && state != State.ABORT) return;
+
+        // PrC RULE: We only process ACKs for the ABORT path.
+        if (state != State.ABORT) return;
 
         mark(from, NodeState.ACKED);
 
         if (allAcknowledged()) {
+            // Write end_of_transaction to forget the aborted transaction
             log.write(new LogRecord(
                     txId,
                     CoordinatorLogRecordType.END_TRANSACTION,
                     Instant.now()
             ));
+            // Finished. No timer.
         } else {
             resendDecisionToMissing();
+            timer.set();
         }
     }
-    /**
-    Algorithm 5.8: 2PC Coordinator Terminate
-            begin
-if in WAIT state then {coordinator is in ABORT state}
-    write abort record in the log
-            send “Global-abort” message to all the participants
-else {coordinator is in COMMIT state}
-    check for the last log record
-if last log record = abort then
-    send “Global-abort” to all participants that have not responded
-else
-    send “Global-commit” to all the participants that have not responded
-    end if
-    end if
-    set timer
-    end*/
+
     private void Terminate() {
-        var state = getState();
-        if (state == State.WAIT){
+        State state = getState();
+
+        if (state == State.WAIT) {
+            // Timeout waiting for votes -> Decide to Abort
             writeGlobalAbort();
             broadcast(MessageType.GLOBAL_ABORT);
-        }else{
-            var last = log.getLast(txId);
-            if (last != null){
-                resendDecisionToMissing();
-            }
-            //Last log will never be null since
+            timer.set(); // Wait for Abort ACKs
+        } else if (state == State.ABORT) {
+            // Timeout waiting for Abort ACKs -> Resend
+            resendDecisionToMissing();
+            timer.set();
         }
-        timer.set();
-
     }
-
 
     // =========================================================
     // Helpers
     // =========================================================
+
     private void writeGlobalAbort() {
         log.write(new LogRecord(
                 txId,
@@ -262,7 +209,9 @@ else
                 Instant.now()
         ));
     }
+
     private void writeBeginCommit() {
+        // This acts as the "collecting record" which must be force-written.
         log.write(new LogRecord(
                 txId,
                 CoordinatorLogRecordType.BEGIN_COMMIT,
@@ -271,6 +220,7 @@ else
     }
 
     private void WriteGlobalCommit() {
+        // Optimization: This write does not need to be forced to disk synchronously.
         log.write(new LogRecord(
                 txId,
                 CoordinatorLogRecordType.GLOBAL_COMMIT,
@@ -287,7 +237,6 @@ else
                     }
                 });
     }
-
 
     private boolean allVotedCommit() {
         return participants.stream()
@@ -326,10 +275,7 @@ else
         }
     }
 
-
-    // Stub (LocalNetwork will call this)
     private void send(Message msg) {
-
         network.send(msg);
     }
 }

@@ -30,6 +30,10 @@ public final class ActorNode implements IMessageHandler,Runnable {
         this.workerThread = new Thread(this, "Actor-" + id.value());
     }
 
+    public Thread getWorkerThread() {
+        return workerThread;
+    }
+
     public void onMessage(Message msg) {
         mailbox.offer(new MessageEvent(msg));
     }

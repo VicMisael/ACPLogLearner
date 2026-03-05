@@ -5,7 +5,9 @@ public enum MessageType {
     COMMIT_REQUEST,
 
     // Phase 1
-    PREPARE,
+    PREPARE_2PC,
+    PREPARE_2PC_PAB,
+    PREPARE_2PC_PCO,
     VOTE_COMMIT,
     VOTE_ABORT,
 

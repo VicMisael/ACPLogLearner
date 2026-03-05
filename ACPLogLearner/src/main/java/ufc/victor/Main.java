@@ -12,10 +12,15 @@ import ufc.victor.protocol.commom.message.EmptyPayload;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.TwoPhaseCommitCoordinator;
+import ufc.victor.protocol.coordinator.TwoPhasePresumedAbortCoordinator;
+import ufc.victor.protocol.coordinator.TwoPhasePresumedCommitCoordinator;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
+import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.TransactionalResource;
 import ufc.victor.protocol.participant.TwoPhaseCommitParticipant;
+import ufc.victor.protocol.participant.TwoPhaseCommitPresumedAbortParticipant;
+import ufc.victor.protocol.participant.TwoPhaseCommitPresumedCommitParticipant;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
 
 import java.util.Set;
@@ -51,8 +56,8 @@ public class Main {
         @Override
         public boolean prepare(TransactionId txId) {
             System.out.println("  [SlowDB] Disk spin-up...");
-            sleep(9000); // Takes 4s to vote (Simulates a Straggler)
-            return true;
+            sleep(4000); // Takes 4s to vote (Simulates a Straggler)
+            return false;
         }
 
         @Override
@@ -64,7 +69,7 @@ public class Main {
     // ----------------------------------------------------------
     // MAIN SIMULATION
     // ----------------------------------------------------------
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
 
         System.out.println("=== INITIALIZING DISTRIBUTED SYSTEM ===");
 
@@ -117,7 +122,7 @@ public class Main {
         LocalNode p3Node = new LocalNode(p3Id);
 
         // -- Coordinator Logic --
-        ICoordinator coordLogic = new TwoPhaseCommitCoordinator(
+        ICoordinator coordLogic = new TwoPhasePresumedAbortCoordinator(
                 txId,
                 coordNode,
                 Set.of(p1Node, p2Node, p3Node), // The cluster membership
@@ -127,16 +132,16 @@ public class Main {
         );
 
         // -- Participant Logic --
-        IParticipant p1Logic = new TwoPhaseCommitParticipant(
+        IParticipant p1Logic = new TwoPhaseCommitPresumedAbortParticipant(
                 txId, p1Node, coordNode, p1Log, p1TimerFactory, new FakeResource("DB-1"), network
         );
 
-        IParticipant p2Logic = new TwoPhaseCommitParticipant(
+        IParticipant p2Logic = new TwoPhaseCommitPresumedAbortParticipant(
                 txId, p2Node, coordNode, p2Log, p2TimerFactory, new FakeResource("DB-2"), network
         );
 
         // P3 is the "Bad Node" (Slow Resource)
-        IParticipant p3Logic = new TwoPhaseCommitParticipant(
+        IParticipant p3Logic = new TwoPhaseCommitPresumedAbortParticipant(
                 txId, p3Node, coordNode, p3Log, p3TimerFactory, new SlowResource(), network
         );
 
@@ -175,6 +180,37 @@ public class Main {
         // We wait long enough for the slow node (4s) + network delay
         System.out.println(">>> Simulation running (Waiting 6s for completion)...");
 
+        boolean loop = true;
+
+        long startTime = System.currentTimeMillis();
+        long timeoutMs = 60_000;
+
+        while (loop) {
+            var log = cLog.getLast(txId);
+
+            if (log != null) {
+                // Did we reach a terminal state?
+                if (log.type() == CoordinatorLogRecordType.END_TRANSACTION){ // (PrC might stop here)
+
+                    System.out.println("Transaction finished with state: " + log.type());
+                    loop = false;
+                }
+            }
+
+            // Did we wait too long? (Simulated 2PC Block)
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                System.err.println("Transaction TIMED OUT or BLOCKED!");
+                loop = false;
+            }
+
+            // Let the CPU breathe and give the Actor threads time to work
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                loop = false;
+            }
+        }
 
         // 9. SHUTDOWN & REPORT
         System.out.println(">>> Shutting down...");
