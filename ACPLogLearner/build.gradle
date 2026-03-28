@@ -10,6 +10,12 @@ repositories {
 }
 
 dependencies {
+    // MOA (Massive Online Analysis) - Provides the Hoeffding Tree (VFDT)
+    implementation('nz.ac.waikato.cms.moa:moa:2023.04.0') {
+        // Exclude missing dsol-xml transitive dependency from ssj
+        exclude group: 'dsol', module: 'dsol-xml'
+    }
+
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
 }
