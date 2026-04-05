@@ -54,6 +54,11 @@ public final class ActorNode implements IMessageHandler,Runnable {
         mailbox.offer(new ControlEvent(ControlEvent.Type.SHUTDOWN));
     }
 
+    public void crash() {
+        running.set(false);
+        workerThread.interrupt();
+    }
+
     public void setProtocolLogic(IProtocol logic) {
         this.protocolLogic = logic;
     }
@@ -77,8 +82,10 @@ public final class ActorNode implements IMessageHandler,Runnable {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                System.err.println("Node " + id + " crashed on event: " + e.getMessage());
-                e.printStackTrace();
+                if (running.get()) {
+                    System.err.println("Node " + id + " crashed on event: " + e.getMessage());
+                    e.printStackTrace();
+                }
             }
         }
         System.out.println("Node " + id + " offline.");

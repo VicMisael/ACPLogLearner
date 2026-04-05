@@ -1,6 +1,7 @@
 package ufc.victor.protocol.participant;
 
 import ufc.victor.localenv.LocalNode;
+import ufc.victor.protocol.SelectedProtocol;
 import ufc.victor.protocol.abstractions.IParticipant;
 import ufc.victor.protocol.commom.ITimerFactory;
 import ufc.victor.protocol.commom.Network;
@@ -20,6 +21,9 @@ public final class AdaptiveParticipantDispatcher implements IParticipant {
     private final ITimerFactory timerFactory;
     private final TransactionalResource resource;
     private final Network network;
+    private final SelectedProtocol selectedProtocol;
+    private final TransactionId fixedTxId;
+    private final Node fixedCoordinatorNode;
 
     public AdaptiveParticipantDispatcher(
             LocalNode myNode,
@@ -27,11 +31,26 @@ public final class AdaptiveParticipantDispatcher implements IParticipant {
             ITimerFactory timerFactory,
             TransactionalResource resource,
             Network network) {
+        this(myNode, logManager, timerFactory, resource, network, null, null, null);
+    }
+
+    public AdaptiveParticipantDispatcher(
+            LocalNode myNode,
+            ParticipantLogManager logManager,
+            ITimerFactory timerFactory,
+            TransactionalResource resource,
+            Network network,
+            SelectedProtocol selectedProtocol,
+            TransactionId fixedTxId,
+            Node fixedCoordinatorNode) {
         this.myNode = myNode;
         this.logManager = logManager;
         this.timerFactory = timerFactory;
         this.resource = resource;
         this.network = network;
+        this.selectedProtocol = selectedProtocol;
+        this.fixedTxId = fixedTxId;
+        this.fixedCoordinatorNode = fixedCoordinatorNode;
     }
 
     @Override
@@ -78,10 +97,24 @@ public final class AdaptiveParticipantDispatcher implements IParticipant {
         };
     }
 
+    private IParticipant spawnProtocol(SelectedProtocol protocol, TransactionId txId, Node coordinatorNode) {
+        return switch (protocol) {
+            case TWO_PC ->
+                    new TwoPhaseCommitParticipant(txId, myNode, coordinatorNode, logManager, timerFactory, resource, network);
+            case TWO_PC_PRESUMED_ABORT ->
+                    new TwoPhaseCommitPresumedAbortParticipant(txId, myNode, coordinatorNode, logManager, timerFactory, resource, network);
+            case TWO_PC_PRESUMED_COMMIT ->
+                    new TwoPhaseCommitPresumedCommitParticipant(txId, myNode, coordinatorNode, logManager, timerFactory, resource, network);
+        };
+    }
+
     @Override
     public void recover() {
+        if (activeProtocol == null && selectedProtocol != null && fixedTxId != null && fixedCoordinatorNode != null) {
+            activeProtocol = spawnProtocol(selectedProtocol, fixedTxId, fixedCoordinatorNode);
+        }
         if(activeProtocol != null){
-            activeProtocol.onTimeout();
+            activeProtocol.recover();
         }
     }
 }

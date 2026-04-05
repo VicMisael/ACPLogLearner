@@ -9,6 +9,7 @@ import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
+import ufc.victor.protocol.participant.log.ParticipantPhase;
 import ufc.victor.protocol.participant.log.ParticipantLogRecord;
 import ufc.victor.protocol.participant.log.ParticipantLogRecordType;
 
@@ -37,6 +38,7 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
     private final ITimer timer;
     private final TransactionalResource resource;
     private final Network network;
+    private Instant preparePhaseStartedAt;
 
     public TwoPhaseCommitPresumedCommitParticipant(
             TransactionId txId,
@@ -62,7 +64,8 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
         switch (state) {
             case INIT -> {
                 // If we crashed before voting, we unilaterally abort.
-                voteAbort();
+                Instant phaseStart = Instant.now();
+                voteAbort(phaseStart, ParticipantPhase.TERMINATION, phaseStart);
             }
             case READY -> {
                 // We voted YES but crashed. We are blocked and must ask the coordinator.
@@ -97,9 +100,9 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
     public void onMessage(Message msg) {
         switch (msg.type()) {
             // PrC Activation Signal!
-            case PREPARE_2PC_PCO -> onPrepare();
-            case GLOBAL_ABORT -> onGlobalAbort();
-            case GLOBAL_COMMIT -> onGlobalCommit();
+            case PREPARE_2PC_PCO -> onPrepare(msg);
+            case GLOBAL_ABORT -> onGlobalAbort(msg);
+            case GLOBAL_COMMIT -> onGlobalCommit(msg);
             default -> { /* ignore */ }
         }
     }
@@ -115,34 +118,41 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
     // Valduriez handlers (Adapted for PrC)
     // =========================================================
 
-    private void onPrepare() {
+    private void onPrepare(Message msg) {
         if (getState() != State.INIT) return;
 
+        preparePhaseStartedAt = Instant.now();
         if (resource.prepare(txId)) {
-            voteCommit();
+            voteCommit(msg.timestamp());
         } else {
-            voteAbort();
+            voteAbort(msg.timestamp(), ParticipantPhase.PREPARE, preparePhaseStartedAt);
         }
     }
 
-    private void voteCommit() {
+    private void voteCommit(Instant triggerTimestamp) {
         // MUST be force-written
-        log.write(new ParticipantLogRecord(
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.READY,
-                Instant.now()
+                ParticipantPhase.PREPARE,
+                triggerTimestamp,
+                preparePhaseStartedAt
         ));
 
         send(VOTE_COMMIT);
         timer.set();
     }
 
-    private void voteAbort() {
+    private void voteAbort(Instant triggerTimestamp, ParticipantPhase phase, Instant phaseStartedAt) {
         // PrC RULE: Aborts must be safely logged before sending VOTE_ABORT
-        log.write(new ParticipantLogRecord(
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.ABORT,
-                Instant.now()
+                phase,
+                triggerTimestamp,
+                phaseStartedAt
         ));
 
         resource.abort(txId);
@@ -150,14 +160,18 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
         // Protocol done locally.
     }
 
-    private void onGlobalAbort() {
+    private void onGlobalAbort(Message msg) {
         if (getState() == State.ABORT || getState() == State.INIT) return;
 
         // PrC RULE: We must log the abort so we don't accidentally presume commit later
-        log.write(new ParticipantLogRecord(
+        Instant phaseStart = Instant.now();
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.ABORT,
-                Instant.now()
+                ParticipantPhase.DECISION,
+                msg.timestamp(),
+                phaseStart
         ));
 
         resource.abort(txId);
@@ -167,16 +181,20 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
         timer.reset();
     }
 
-    private void onGlobalCommit() {
+    private void onGlobalCommit(Message msg) {
         if (getState() == State.COMMIT) return;
 
         // PrC Optimization: This commit log does NOT need to be strictly force-written.
         // If we crash and lose it, recovery sees READY and asks the coordinator.
         // Coordinator won't know the Tx, so we will presume commit anyway!
-        log.write(new ParticipantLogRecord(
+        Instant phaseStart = Instant.now();
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.COMMIT,
-                Instant.now()
+                ParticipantPhase.DECISION,
+                msg.timestamp(),
+                phaseStart
         ));
 
         resource.commit(txId);
@@ -187,7 +205,8 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
 
     private void Terminate() {
         if (getState() == State.INIT) {
-            voteAbort();
+            Instant phaseStart = Instant.now();
+            voteAbort(phaseStart, ParticipantPhase.TERMINATION, phaseStart);
         } else if (getState() == State.READY) {
             // We are BLOCKED. Query the coordinator.
             send(VOTE_COMMIT);

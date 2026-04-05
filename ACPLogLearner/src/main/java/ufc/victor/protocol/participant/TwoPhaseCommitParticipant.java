@@ -6,6 +6,7 @@ import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
+import ufc.victor.protocol.participant.log.ParticipantPhase;
 import ufc.victor.protocol.participant.log.ParticipantLogRecord;
 import ufc.victor.protocol.participant.log.ParticipantLogRecordType;
 
@@ -38,6 +39,7 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
     private final ITimer timer;
     private final TransactionalResource resource;
     private final Network network;
+    private Instant preparePhaseStartedAt;
 
     public TwoPhaseCommitParticipant(
             TransactionId txId,
@@ -63,7 +65,8 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
 
         switch (state){
             case INIT:
-                abort();
+                Instant phaseStart = Instant.now();
+                abort(phaseStart, ParticipantPhase.TERMINATION, phaseStart);
                 break;
                 case READY:
                     Terminate();
@@ -96,11 +99,11 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
     public void onMessage(Message msg) {
         switch (msg.type()) {
 
-            case PREPARE_2PC -> onPrepare();
+            case PREPARE_2PC -> onPrepare(msg);
 
-            case GLOBAL_ABORT -> onGlobalAbort();
+            case GLOBAL_ABORT -> onGlobalAbort(msg);
 
-            case GLOBAL_COMMIT -> onGlobalCommit();
+            case GLOBAL_COMMIT -> onGlobalCommit(msg);
 
             default -> {
                 // ignore
@@ -131,33 +134,40 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
      *      send Vote-abort
      *      abort transaction
      */
-    private void onPrepare() {
+    private void onPrepare(Message msg) {
         if (getState() != State.INIT) return;
 
+        preparePhaseStartedAt = Instant.now();
         if (resource.prepare(txId)) {
-            commit();
+            commit(msg.timestamp());
 
         } else {
-            abort();
+            abort(msg.timestamp(), ParticipantPhase.PREPARE, preparePhaseStartedAt);
         }
     }
 
-    private void commit() {
-        log.write(new ParticipantLogRecord(
+    private void commit(Instant triggerTimestamp) {
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.READY,
-                Instant.now()
+                ParticipantPhase.PREPARE,
+                triggerTimestamp,
+                preparePhaseStartedAt
         ));
 
         send(VOTE_COMMIT);
         timer.set();
     }
 
-    private void abort() {
-        log.write(new ParticipantLogRecord(
+    private void abort(Instant triggerTimestamp, ParticipantPhase phase, Instant phaseStartedAt) {
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.ABORT,
-                Instant.now()
+                phase,
+                triggerTimestamp,
+                phaseStartedAt
         ));
 
         send(VOTE_ABORT);
@@ -170,11 +180,15 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
      *   write abort
      *   abort the transaction
      */
-    private void onGlobalAbort() {
-        log.write(new ParticipantLogRecord(
+    private void onGlobalAbort(Message msg) {
+        Instant phaseStart = Instant.now();
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.ABORT,
-                Instant.now()
+                ParticipantPhase.DECISION,
+                msg.timestamp(),
+                phaseStart
         ));
 
         resource.abort(txId);
@@ -188,12 +202,15 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
      *   write commit
      *   commit the transaction
      */
-    private void onGlobalCommit() {
-
-        log.write(new ParticipantLogRecord(
+    private void onGlobalCommit(Message msg) {
+        Instant phaseStart = Instant.now();
+        log.write(ParticipantLogRecord.of(
                 txId,
+                participantId.id,
                 ParticipantLogRecordType.COMMIT,
-                Instant.now()
+                ParticipantPhase.DECISION,
+                msg.timestamp(),
+                phaseStart
         ));
 
         resource.commit(txId);
@@ -208,10 +225,14 @@ public final class TwoPhaseCommitParticipant implements IParticipant {
      */
     private void Terminate() {
         if (getState() == State.INIT) {
-            log.write(new ParticipantLogRecord(
+            Instant phaseStart = Instant.now();
+            log.write(ParticipantLogRecord.of(
                     txId,
+                    participantId.id,
                     ParticipantLogRecordType.ABORT,
-                    Instant.now()
+                    ParticipantPhase.TERMINATION,
+                    phaseStart,
+                    phaseStart
             ));
         } else {
             send(VOTE_COMMIT);

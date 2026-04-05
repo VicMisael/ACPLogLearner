@@ -8,6 +8,7 @@ import ufc.victor.protocol.commom.TransactionId;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
+import ufc.victor.protocol.coordinator.log.CoordinatorPhase;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 import ufc.victor.protocol.coordinator.log.LogRecord;
 import ufc.victor.protocol.coordinator.node.Node;
@@ -35,6 +36,8 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
     private final CoordinatorLogManager log;
     private final ITimer timer;
     private final Network network;
+    private Instant voteCollectionStartedAt;
+    private Instant completionWaitStartedAt;
 
     public TwoPhasePresumedAbortCoordinator(
             TransactionId txId,
@@ -64,7 +67,7 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
             }
             case WAIT -> {
                 // PrA Rule: If we crashed before deciding, we PRESUME ABORT.
-                writeGlobalAbort();
+                writeGlobalAbort(null);
                 broadcast(MessageType.GLOBAL_ABORT);
             }
             case COMMIT -> {
@@ -92,10 +95,10 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
     // =========================================================
     public void onMessage(Message msg) {
         switch (msg.type()) {
-            case COMMIT_REQUEST -> onCommitRequest();
-            case VOTE_ABORT -> onVoteAbort(msg.from());
-            case VOTE_COMMIT -> onVoteCommit(msg.from());
-            case ACK -> onAck(msg.from());
+            case COMMIT_REQUEST -> onCommitRequest(msg);
+            case VOTE_ABORT -> onVoteAbort(msg.from(), msg.timestamp());
+            case VOTE_COMMIT -> onVoteCommit(msg.from(), msg.timestamp());
+            case ACK -> onAck(msg.from(), msg.timestamp());
             default -> { /* ignore */ }
         }
     }
@@ -119,33 +122,35 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
     // Handlers (Valduriez mapping for PrA)
     // =========================================================
 
-    private void onCommitRequest() {
+    private void onCommitRequest(Message msg) {
         if (getState() != State.INIT) return;
 
-        writeBeginCommit();
+        Instant phaseStart = Instant.now();
+        voteCollectionStartedAt = phaseStart;
+        writeBeginCommit(msg.timestamp(), phaseStart);
         broadcast(MessageType.PREPARE_2PC_PAB);
         timer.set();
     }
 
-    private void onVoteAbort(Node from) {
+    private void onVoteAbort(Node from, Instant triggerTimestamp) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.ABORTED);
 
-        writeGlobalAbort();
+        writeGlobalAbort(triggerTimestamp);
         broadcast(MessageType.GLOBAL_ABORT);
 
         // PrA RULE: Do NOT set the timer. We do not expect ACKs for aborts.
         // The transaction is now forgotten.
     }
 
-    private void onVoteCommit(Node from) {
+    private void onVoteCommit(Node from, Instant triggerTimestamp) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.VOTED_COMMIT);
 
         if (allVotedCommit()) {
-            WriteGlobalCommit();
+            writeGlobalCommit(triggerTimestamp);
             broadcast(MessageType.GLOBAL_COMMIT);
 
             // We DO expect ACKs for Commits in PrA.
@@ -153,7 +158,7 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
         }
     }
 
-    private void onAck(Node from) {
+    private void onAck(Node from, Instant triggerTimestamp) {
         State state = getState();
 
         // PrA RULE: We only process ACKs for the COMMIT path.
@@ -162,10 +167,13 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
         mark(from, NodeState.ACKED);
 
         if (allAcknowledged()) {
-            log.write(new LogRecord(
+            log.write(LogRecord.of(
                     txId,
+                    coordinatorId.id,
                     CoordinatorLogRecordType.END_TRANSACTION,
-                    Instant.now()
+                    CoordinatorPhase.COMPLETION,
+                    triggerTimestamp,
+                    resolveCompletionWaitStartedAt()
             ));
             // Finished. No timer.
         } else {
@@ -179,7 +187,7 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
 
         if (state == State.WAIT) {
             // Timeout waiting for votes -> Presume Abort
-            writeGlobalAbort();
+            writeGlobalAbort(null);
             broadcast(MessageType.GLOBAL_ABORT);
             // PrA RULE: Do not set timer. We are finished.
         } else if (state == State.COMMIT) {
@@ -193,28 +201,41 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
     // Helpers
     // =========================================================
 
-    private void writeGlobalAbort() {
+    private void writeGlobalAbort(Instant triggerTimestamp) {
         // Optimization: In a real DB, this write does not need to be forced to disk synchronously.
-        log.write(new LogRecord(
+        Instant phaseStart = resolveVoteCollectionStartedAt();
+        completionWaitStartedAt = Instant.now();
+        log.write(LogRecord.of(
                 txId,
+                coordinatorId.id,
                 CoordinatorLogRecordType.GLOBAL_ABORT,
-                Instant.now()
+                CoordinatorPhase.DECISION_BROADCAST,
+                triggerTimestamp,
+                phaseStart
         ));
     }
 
-    private void writeBeginCommit() {
-        log.write(new LogRecord(
+    private void writeBeginCommit(Instant triggerTimestamp, Instant phaseStart) {
+        log.write(LogRecord.of(
                 txId,
+                coordinatorId.id,
                 CoordinatorLogRecordType.BEGIN_COMMIT,
-                Instant.now()
+                CoordinatorPhase.REQUEST_HANDLING,
+                triggerTimestamp,
+                phaseStart
         ));
     }
 
-    private void WriteGlobalCommit() {
-        log.write(new LogRecord(
+    private void writeGlobalCommit(Instant triggerTimestamp) {
+        Instant phaseStart = resolveVoteCollectionStartedAt();
+        completionWaitStartedAt = Instant.now();
+        log.write(LogRecord.of(
                 txId,
+                coordinatorId.id,
                 CoordinatorLogRecordType.GLOBAL_COMMIT,
-                Instant.now()
+                CoordinatorPhase.DECISION_BROADCAST,
+                triggerTimestamp,
+                phaseStart
         ));
     }
 
@@ -258,5 +279,33 @@ public final class TwoPhasePresumedAbortCoordinator implements ICoordinator {
 
     private void send(Message msg) {
         network.send(msg);
+    }
+
+    private Instant resolveVoteCollectionStartedAt() {
+        if (voteCollectionStartedAt != null) {
+            return voteCollectionStartedAt;
+        }
+        return findLastTimestamp(CoordinatorLogRecordType.BEGIN_COMMIT, Instant.now());
+    }
+
+    private Instant resolveCompletionWaitStartedAt() {
+        if (completionWaitStartedAt != null) {
+            return completionWaitStartedAt;
+        }
+        Instant fallback = findLastTimestamp(CoordinatorLogRecordType.GLOBAL_COMMIT, null);
+        if (fallback != null) {
+            return fallback;
+        }
+        return findLastTimestamp(CoordinatorLogRecordType.GLOBAL_ABORT, Instant.now());
+    }
+
+    private Instant findLastTimestamp(CoordinatorLogRecordType type, Instant fallback) {
+        Instant lastTimestamp = null;
+        for (LogRecord record : log.read(txId)) {
+            if (record.type() == type) {
+                lastTimestamp = record.timestamp();
+            }
+        }
+        return lastTimestamp != null ? lastTimestamp : fallback;
     }
 }

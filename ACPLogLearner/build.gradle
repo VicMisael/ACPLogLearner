@@ -23,3 +23,10 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+tasks.register('runExperiment', JavaExec) {
+    group = 'application'
+    description = 'Runs the adaptive 2PC experiment harness.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ufc.victor.experiment.ExperimentRunner'
+}

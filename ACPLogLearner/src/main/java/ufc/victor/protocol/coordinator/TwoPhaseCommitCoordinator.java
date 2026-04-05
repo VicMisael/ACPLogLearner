@@ -4,6 +4,7 @@ import ufc.victor.protocol.abstractions.ICoordinator;
 import ufc.victor.protocol.commom.*;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
+import ufc.victor.protocol.coordinator.log.CoordinatorPhase;
 import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
 import ufc.victor.protocol.coordinator.log.LogRecord;
@@ -33,6 +34,8 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
     private final CoordinatorLogManager log;
     private final ITimer timer;
     private final Network network;
+    private Instant voteCollectionStartedAt;
+    private Instant completionWaitStartedAt;
 
     public TwoPhaseCommitCoordinator(
             TransactionId txId,
@@ -99,13 +102,13 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
     public void onMessage(Message msg) {
         switch (msg.type()) {
 
-            case COMMIT_REQUEST -> onCommitRequest();
+            case COMMIT_REQUEST -> onCommitRequest(msg);
 
-            case VOTE_ABORT -> onVoteAbort(msg.from());
+            case VOTE_ABORT -> onVoteAbort(msg.from(), msg.timestamp());
 
-            case VOTE_COMMIT -> onVoteCommit(msg.from());
+            case VOTE_COMMIT -> onVoteCommit(msg.from(), msg.timestamp());
 
-            case ACK -> onAck(msg.from());
+            case ACK -> onAck(msg.from(), msg.timestamp());
 
             default -> {
                 // ignore
@@ -139,10 +142,12 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
      *   send PREPARE
      *   set timer
      */
-    private void onCommitRequest() {
+    private void onCommitRequest(Message msg) {
         if (getState() != State.INIT) return;
 
-        writeBeginCommit();
+        Instant phaseStart = Instant.now();
+        voteCollectionStartedAt = phaseStart;
+        writeBeginCommit(msg.timestamp(), phaseStart);
 
         broadcast(MessageType.PREPARE_2PC);
         timer.set();
@@ -156,13 +161,13 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
      *   write abort
      *   send global-abort
      */
-    private void onVoteAbort(Node from) {
+    private void onVoteAbort(Node from, Instant triggerTimestamp) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.ABORTED);
 
 
-        writeGlobalAbort();
+        writeGlobalAbort(triggerTimestamp);
 
         broadcast(MessageType.GLOBAL_ABORT);
         timer.set();
@@ -178,14 +183,14 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
      *      write commit
      *      send global-commit
      */
-    private void onVoteCommit(Node from) {
+    private void onVoteCommit(Node from, Instant triggerTimestamp) {
         if (getState() != State.WAIT) return;
 
         mark(from, NodeState.VOTED_COMMIT);
 
         if (allVotedCommit()) {
 
-            WriteGlobalCommit();
+            writeGlobalCommit(triggerTimestamp);
 
             broadcast(MessageType.GLOBAL_COMMIT);
             timer.set();
@@ -203,17 +208,20 @@ public final class TwoPhaseCommitCoordinator implements ICoordinator {
      *   else
      *      resend decision
      */
-    private void onAck(Node from) {
+    private void onAck(Node from, Instant triggerTimestamp) {
         State state = getState();
         if (state != State.COMMIT && state != State.ABORT) return;
 
         mark(from, NodeState.ACKED);
 
         if (allAcknowledged()) {
-            log.write(new LogRecord(
+            log.write(LogRecord.of(
                     txId,
+                    coordinatorId.id,
                     CoordinatorLogRecordType.END_TRANSACTION,
-                    Instant.now()
+                    CoordinatorPhase.COMPLETION,
+                    triggerTimestamp,
+                    resolveCompletionWaitStartedAt()
             ));
         } else {
             resendDecisionToMissing();
@@ -238,7 +246,7 @@ else
     private void Terminate() {
         var state = getState();
         if (state == State.WAIT){
-            writeGlobalAbort();
+            writeGlobalAbort(null);
             broadcast(MessageType.GLOBAL_ABORT);
         }else{
             var last = log.getLast(txId);
@@ -255,26 +263,40 @@ else
     // =========================================================
     // Helpers
     // =========================================================
-    private void writeGlobalAbort() {
-        log.write(new LogRecord(
+    private void writeGlobalAbort(Instant triggerTimestamp) {
+        Instant phaseStart = resolveVoteCollectionStartedAt();
+        completionWaitStartedAt = Instant.now();
+        log.write(LogRecord.of(
                 txId,
+                coordinatorId.id,
                 CoordinatorLogRecordType.GLOBAL_ABORT,
-                Instant.now()
-        ));
-    }
-    private void writeBeginCommit() {
-        log.write(new LogRecord(
-                txId,
-                CoordinatorLogRecordType.BEGIN_COMMIT,
-                Instant.now()
+                CoordinatorPhase.DECISION_BROADCAST,
+                triggerTimestamp,
+                phaseStart
         ));
     }
 
-    private void WriteGlobalCommit() {
-        log.write(new LogRecord(
+    private void writeBeginCommit(Instant triggerTimestamp, Instant phaseStart) {
+        log.write(LogRecord.of(
                 txId,
+                coordinatorId.id,
+                CoordinatorLogRecordType.BEGIN_COMMIT,
+                CoordinatorPhase.REQUEST_HANDLING,
+                triggerTimestamp,
+                phaseStart
+        ));
+    }
+
+    private void writeGlobalCommit(Instant triggerTimestamp) {
+        Instant phaseStart = resolveVoteCollectionStartedAt();
+        completionWaitStartedAt = Instant.now();
+        log.write(LogRecord.of(
+                txId,
+                coordinatorId.id,
                 CoordinatorLogRecordType.GLOBAL_COMMIT,
-                Instant.now()
+                CoordinatorPhase.DECISION_BROADCAST,
+                triggerTimestamp,
+                phaseStart
         ));
     }
 
@@ -331,5 +353,33 @@ else
     private void send(Message msg) {
 
         network.send(msg);
+    }
+
+    private Instant resolveVoteCollectionStartedAt() {
+        if (voteCollectionStartedAt != null) {
+            return voteCollectionStartedAt;
+        }
+        return findLastTimestamp(CoordinatorLogRecordType.BEGIN_COMMIT, Instant.now());
+    }
+
+    private Instant resolveCompletionWaitStartedAt() {
+        if (completionWaitStartedAt != null) {
+            return completionWaitStartedAt;
+        }
+        Instant fallback = findLastTimestamp(CoordinatorLogRecordType.GLOBAL_COMMIT, null);
+        if (fallback != null) {
+            return fallback;
+        }
+        return findLastTimestamp(CoordinatorLogRecordType.GLOBAL_ABORT, Instant.now());
+    }
+
+    private Instant findLastTimestamp(CoordinatorLogRecordType type, Instant fallback) {
+        Instant lastTimestamp = null;
+        for (LogRecord record : log.read(txId)) {
+            if (record.type() == type) {
+                lastTimestamp = record.timestamp();
+            }
+        }
+        return lastTimestamp != null ? lastTimestamp : fallback;
     }
 }

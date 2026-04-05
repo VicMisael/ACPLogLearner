@@ -5,8 +5,10 @@ package ufc.victor;
  * just before a new transaction begins.
  */
 public record LogFeatures(
-        double networkLatencyMs,
-        double diskIoTimeMs,
+        double averageNetworkLatencyMs,
+        double maxNetworkLatencyMs,
+        double averageDiskIoTimeMs,
+        double maxDiskIoTimeMs,
         double abortRate,
         int participantCount
 ) {
