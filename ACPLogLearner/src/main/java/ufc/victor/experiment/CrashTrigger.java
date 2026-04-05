@@ -1,6 +1,6 @@
 package ufc.victor.experiment;
 
-public enum CrashTrigger {
+public enum     CrashTrigger {
     PARTICIPANT_BEFORE_READY,
     PARTICIPANT_AFTER_READY,
     COORDINATOR_BEFORE_DECISION,
