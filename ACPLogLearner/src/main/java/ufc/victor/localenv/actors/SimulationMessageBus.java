@@ -7,11 +7,14 @@ import ufc.victor.protocol.coordinator.node.NodeId;
 
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class SimulationMessageBus implements Network {
 
 
     private final Map<NodeId, IMessageHandler> routes = new ConcurrentHashMap<>();
+    private final Map<NodeId, LatencyProfile> nodeLatencies = new ConcurrentHashMap<>();
+    private final AtomicLong sentMessageCount = new AtomicLong(0L);
 
 
     private final ScheduledExecutorService scheduler =
@@ -34,6 +37,10 @@ public class SimulationMessageBus implements Network {
         routes.put(nodeId, handler);
     }
 
+    public void setNodeLatency(NodeId nodeId, int minLatencyMs, int maxLatencyMs) {
+        nodeLatencies.put(nodeId, new LatencyProfile(minLatencyMs, maxLatencyMs));
+    }
+
     @Override
     public void send(Message msg) {
         // SAFETY CHECK: Is the network plugged in?
@@ -51,7 +58,12 @@ public class SimulationMessageBus implements Network {
             return;
         }
 
-        long latency = ThreadLocalRandom.current().nextInt(minLatencyMs, maxLatencyMs + 1);
+        LatencyProfile profile = nodeLatencies.getOrDefault(
+                targetId,
+                new LatencyProfile(minLatencyMs, maxLatencyMs)
+        );
+        long latency = (profile.minLatencyMs() + profile.maxLatencyMs()) / 2L;
+        sentMessageCount.incrementAndGet();
 
         try {
             scheduler.schedule(() -> {
@@ -66,10 +78,20 @@ public class SimulationMessageBus implements Network {
         }
     }
 
+    public long getSentMessageCount() {
+        return sentMessageCount.get();
+    }
+
     // --------------------------------------------------------
     // LIFECYCLE
     // --------------------------------------------------------
     public void shutdown() {
         scheduler.shutdownNow();
+    }
+
+    private record LatencyProfile(
+            int minLatencyMs,
+            int maxLatencyMs
+    ) {
     }
 }

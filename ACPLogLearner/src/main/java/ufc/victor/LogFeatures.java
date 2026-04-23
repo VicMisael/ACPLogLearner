@@ -1,14 +1,19 @@
 package ufc.victor;
 
+import java.util.List;
+
 /**
- * Represents the current "State" of the distributed system
- * just before a new transaction begins.
+ * Node-membership view of the participant set that is about to execute a transaction.
  */
 public record LogFeatures(
-        double networkLatencyMs,
-        double diskIoTimeMs,
-        double abortRate,
-        int participantCount
+        List<String> participantNodeIds
 ) {
+    public LogFeatures {
+        participantNodeIds = List.copyOf(participantNodeIds);
+    }
 
+    public String explanationSummary() {
+        return "participants=" + participantNodeIds.size()
+                + ", nodes=" + participantNodeIds;
+    }
 }

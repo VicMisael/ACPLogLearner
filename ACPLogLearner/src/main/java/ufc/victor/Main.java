@@ -51,7 +51,7 @@ public class Main {
         public boolean prepare(TransactionId txId) {
             System.out.println("  [SlowDB] Disk spin-up...");
             sleep(4000); // Takes 4s to vote (Simulates a Straggler)
-            return false;
+            return true;
         }
 
         @Override
