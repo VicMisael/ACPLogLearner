@@ -9,11 +9,13 @@ import ufc.victor.protocol.abstractions.IParticipant;
 import ufc.victor.protocol.commom.*;
 import ufc.victor.protocol.commom.message.Message;
 import ufc.victor.protocol.commom.message.MessageType;
+import ufc.victor.protocol.coordinator.TwoPhaseCommitCoordinator;
 import ufc.victor.protocol.coordinator.TwoPhasePresumedAbortCoordinator;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogManager;
 import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.TransactionalResource;
+import ufc.victor.protocol.participant.TwoPhaseCommitParticipant;
 import ufc.victor.protocol.participant.TwoPhaseCommitPresumedAbortParticipant;
 import ufc.victor.protocol.participant.log.ParticipantLogManager;
 
@@ -116,7 +118,7 @@ public class Main {
         LocalNode p3Node = new LocalNode(p3Id);
 
         // -- Coordinator Logic --
-        ICoordinator coordLogic = new TwoPhasePresumedAbortCoordinator(
+        ICoordinator coordLogic = new TwoPhaseCommitCoordinator(
                 txId,
                 coordNode,
                 Set.of(p1Node, p2Node, p3Node), // The cluster membership
@@ -126,16 +128,16 @@ public class Main {
         );
 
         // -- Participant Logic --
-        IParticipant p1Logic = new TwoPhaseCommitPresumedAbortParticipant(
+        IParticipant p1Logic = new TwoPhaseCommitParticipant(
                 txId, p1Node, coordNode, p1Log, p1TimerFactory, new FakeResource("DB-1"), network
         );
 
-        IParticipant p2Logic = new TwoPhaseCommitPresumedAbortParticipant(
+        IParticipant p2Logic = new TwoPhaseCommitParticipant(
                 txId, p2Node, coordNode, p2Log, p2TimerFactory, new FakeResource("DB-2"), network
         );
 
         // P3 is the "Bad Node" (Slow Resource)
-        IParticipant p3Logic = new TwoPhaseCommitPresumedAbortParticipant(
+        IParticipant p3Logic = new TwoPhaseCommitParticipant(
                 txId, p3Node, coordNode, p3Log, p3TimerFactory, new SlowResource(), network
         );
 

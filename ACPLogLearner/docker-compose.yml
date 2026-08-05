@@ -1,0 +1,77 @@
+name: acp-mariadb
+
+x-mariadb-common: &mariadb-common
+  image: mariadb:11.4
+  restart: unless-stopped
+  environment:
+    MARIADB_ROOT_PASSWORD: ${ACP_MARIADB_ROOT_PASSWORD:-rootpass}
+    MARIADB_DATABASE: ${ACP_MARIADB_DATABASE:-acp}
+    MARIADB_USER: ${ACP_MARIADB_USER:-acp}
+    MARIADB_PASSWORD: ${ACP_MARIADB_PASSWORD:-acp_secret}
+  networks:
+    - acp-mariadb
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "mariadb-admin ping -h 127.0.0.1 -u root -p$${MARIADB_ROOT_PASSWORD} --silent"
+      ]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 25s
+
+services:
+  mariadb-1:
+    <<: *mariadb-common
+    container_name: acp-mariadb-1
+    hostname: mariadb-1
+    ports:
+      - "${ACP_MARIADB_1_PORT:-33061}:3306"
+    volumes:
+      - mariadb1-data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mariadb/node1.cnf:/etc/mysql/conf.d/20-acp.cnf:ro
+
+  mariadb-2:
+    <<: *mariadb-common
+    container_name: acp-mariadb-2
+    hostname: mariadb-2
+    ports:
+      - "${ACP_MARIADB_2_PORT:-33062}:3306"
+    volumes:
+      - mariadb2-data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mariadb/node2.cnf:/etc/mysql/conf.d/20-acp.cnf:ro
+
+  mariadb-3:
+    <<: *mariadb-common
+    container_name: acp-mariadb-3
+    hostname: mariadb-3
+    ports:
+      - "${ACP_MARIADB_3_PORT:-33063}:3306"
+    volumes:
+      - mariadb3-data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mariadb/node3.cnf:/etc/mysql/conf.d/20-acp.cnf:ro
+
+  mariadb-4:
+    <<: *mariadb-common
+    container_name: acp-mariadb-4
+    hostname: mariadb-4
+    ports:
+      - "${ACP_MARIADB_4_PORT:-33064}:3306"
+    volumes:
+      - mariadb4-data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mariadb/node4.cnf:/etc/mysql/conf.d/20-acp.cnf:ro
+
+networks:
+  acp-mariadb:
+    driver: bridge
+
+volumes:
+  mariadb1-data:
+  mariadb2-data:
+  mariadb3-data:
+  mariadb4-data:

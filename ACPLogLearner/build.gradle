@@ -15,6 +15,7 @@ dependencies {
         // Exclude missing dsol-xml transitive dependency from ssj
         exclude group: 'dsol', module: 'dsol-xml'
     }
+    implementation 'org.mariadb.jdbc:mariadb-java-client:3.5.3'
 
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -29,4 +30,11 @@ tasks.register('runExperiment', JavaExec) {
     description = 'Runs the adaptive atomic commit experiment harness.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'ufc.victor.experiment.ExperimentRunner'
+}
+
+tasks.register('runMariaDbDemo', JavaExec) {
+    group = 'application'
+    description = 'Runs the MariaDB XA-backed 2PC demo.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ufc.victor.MariaDbMain'
 }

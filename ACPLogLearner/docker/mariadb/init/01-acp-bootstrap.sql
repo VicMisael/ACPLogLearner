@@ -1,0 +1,12 @@
+CREATE DATABASE IF NOT EXISTS acp;
+
+USE acp;
+
+CREATE TABLE IF NOT EXISTS tx_journal (
+    tx_id VARCHAR(36) NOT NULL,
+    participant_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (tx_id, participant_id)
+);

@@ -1,0 +1,16 @@
+[mysqld]
+server_id=104
+default_storage_engine=InnoDB
+transaction-isolation=SERIALIZABLE
+innodb_flush_log_at_trx_commit=1
+sync_binlog=1
+log_bin=binlog
+binlog_format=ROW
+general_log=1
+general_log_file=general.log
+slow_query_log=1
+slow_query_log_file=slow.log
+long_query_time=0.2
+performance_schema=ON
+skip_name_resolve=ON
+max_connections=200
