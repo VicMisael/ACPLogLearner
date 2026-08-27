@@ -1,0 +1,30 @@
+services:
+  benchmarksql:
+    profiles:
+      - benchmarksql
+    build:
+      context: .
+      dockerfile: docker/benchmarksql/Dockerfile
+    environment:
+      BMSQL_DB_HOST: ${BMSQL_DB_HOST:-mariadb-1}
+      BMSQL_DATABASE: ${ACP_MARIADB_DATABASE:-acp}
+      BMSQL_USER: ${ACP_MARIADB_USER:-acp}
+      BMSQL_PASSWORD: ${ACP_MARIADB_PASSWORD:-acp_secret}
+      BMSQL_WAREHOUSES: ${BMSQL_WAREHOUSES:-1}
+      BMSQL_LOAD_WORKERS: ${BMSQL_LOAD_WORKERS:-2}
+    volumes:
+      - benchmarksql-results:/benchmarksql/results
+    networks:
+      - acp-mariadb
+    depends_on:
+      mariadb-1:
+        condition: service_healthy
+      mariadb-2:
+        condition: service_healthy
+      mariadb-3:
+        condition: service_healthy
+      mariadb-4:
+        condition: service_healthy
+
+volumes:
+  benchmarksql-results:

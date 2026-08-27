@@ -46,6 +46,8 @@ public final class MariaDbXaTransactionalResource implements TransactionalResour
             executeXa(connection, "XA PREPARE %s".formatted(xaIdLiteral(txId)));
             return true;
         } catch (SQLException e) {
+            System.err.println("XA prepare failed for participant=" + participantId
+                    + ", txId=" + txId + ": " + e.getMessage());
             recoverPrepareFailure(txId, started, ended);
             return false;
         }

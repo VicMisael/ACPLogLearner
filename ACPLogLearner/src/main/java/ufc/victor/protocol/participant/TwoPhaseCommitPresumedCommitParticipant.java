@@ -151,7 +151,13 @@ public final class TwoPhaseCommitPresumedCommitParticipant implements IParticipa
     }
 
     private void onGlobalAbort() {
-        if (getState() == State.ABORT || getState() == State.INIT) return;
+        State state = getState();
+        if (state == State.ABORT) {
+            // The coordinator waits for every participant, including the one that voted NO.
+            send(MessageType.ACK);
+            timer.reset();
+            return;
+        }
 
         // PrC RULE: We must log the abort so we don't accidentally presume commit later
         log.write(new ParticipantLogRecord(

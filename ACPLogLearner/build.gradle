@@ -5,6 +5,12 @@ plugins {
 group = 'ufc.victor'
 version = '1.0-SNAPSHOT'
 
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
 repositories {
     mavenCentral()
 }
@@ -37,4 +43,18 @@ tasks.register('runMariaDbDemo', JavaExec) {
     description = 'Runs the MariaDB XA-backed 2PC demo.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'ufc.victor.MariaDbMain'
+}
+
+tasks.register('runMariaDbTpccCluster', JavaExec) {
+    group = 'application'
+    description = 'Runs distributed XA New-Order transactions on the four-node MariaDB cluster.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ufc.victor.MariaDbTpccClusterMain'
+}
+
+tasks.register('runMariaDbAlps', JavaExec) {
+    group = 'application'
+    description = 'Runs the prequential ALPS experiment with real MariaDB XA transactions.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ufc.victor.MariaDbAlpsMain'
 }

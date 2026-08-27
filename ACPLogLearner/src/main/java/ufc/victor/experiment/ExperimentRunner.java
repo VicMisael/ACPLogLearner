@@ -24,7 +24,10 @@ public class ExperimentRunner {
 
     public static void main(String[] args) throws InterruptedException {
         NodeCatalog nodeCatalog = registeredNodeCatalog();
-        List<Scenario> onlineStream = buildOnlineStream(registeredScenarios());
+        List<Scenario> onlineStream = limitExamples(
+                buildOnlineStream(registeredScenarios()),
+                maxExamples(args)
+        );
 
         DistributedSimulation simulation = new DistributedSimulation();
         ParticipantSetFeatureExtractor featureExtractor = new ParticipantSetFeatureExtractor();
@@ -32,6 +35,7 @@ public class ExperimentRunner {
                 LIKELY_COMMIT_ABORT_THRESHOLD,
                 LIKELY_ABORT_THRESHOLD
         );
+        VfdtProtocolSwitchingPolicy switchingPolicy = new VfdtProtocolSwitchingPolicy();
         VFDTTransactionOutcomePredictor predictor =
                 new VFDTTransactionOutcomePredictor(knownParticipantNodeIds(nodeCatalog));
         OnlineSummary onlineSummary = runOnlineStream(
@@ -40,7 +44,8 @@ public class ExperimentRunner {
                 simulation,
                 featureExtractor,
                 outcomeLabeler,
-                predictor
+                predictor,
+                switchingPolicy
         );
 
         System.out.println("\nOnline Evaluation:");
@@ -51,6 +56,14 @@ public class ExperimentRunner {
                         + ", avgWindowAbortRate=" + onlineSummary.averageWindowAbortRate()
                         + ", labelCounts=" + onlineSummary.labelCounts()
         );
+        System.out.println(
+                "switchAccuracy=" + onlineSummary.switchAccuracy()
+                        + ", selectedProtocols=" + onlineSummary.selectedProtocolCounts()
+        );
+        System.out.println("\nProtocol performance (same transaction plans):");
+        onlineSummary.protocolPerformance().forEach((protocol, performance) ->
+                System.out.println(protocol + "=" + performance));
+        System.out.println("VFDT_SWITCHING=" + onlineSummary.adaptivePerformance());
         System.out.println("\nVFDT stats:");
         System.out.println("nodes=" + predictor.getNodeCount() + ", depth=" + predictor.getTreeDepth());
         System.out.println("\nLearned VFDT rules:");
@@ -172,27 +185,50 @@ public class ExperimentRunner {
             DistributedSimulation simulation,
             ParticipantSetFeatureExtractor featureExtractor,
             TransactionOutcomeLabeler outcomeLabeler,
-            VFDTTransactionOutcomePredictor predictor
+            VFDTTransactionOutcomePredictor predictor,
+            VfdtProtocolSwitchingPolicy switchingPolicy
     ) throws InterruptedException {
         int examples = 0;
         int outcomeCorrect = 0;
         long totalCommittedTransactions = 0L;
         long totalTransactions = 0L;
         Map<TransactionOutcomeClass, Integer> labelCounts = new EnumMap<>(TransactionOutcomeClass.class);
+        Map<SelectedProtocol, Integer> selectedProtocolCounts = new EnumMap<>(SelectedProtocol.class);
+        Map<SelectedProtocol, PerformanceAccumulator> protocolPerformance = new EnumMap<>(SelectedProtocol.class);
+        for (SelectedProtocol protocol : SelectedProtocol.values()) {
+            protocolPerformance.put(protocol, new PerformanceAccumulator());
+        }
+        PerformanceAccumulator adaptivePerformance = new PerformanceAccumulator();
+        int switchCorrect = 0;
 
         for (Scenario scenario : scenarios) {
             LogFeatures features = featureExtractor.extract(scenario);
             TransactionOutcomeClass predictedOutcome = predictor.predict(features);
             ObservationWindowSummary windowSummary = runObservationWindow(scenario, nodeCatalog, simulation);
             TransactionOutcomeClass actualOutcome = outcomeLabeler.label(windowSummary.abortRate());
+            SelectedProtocol selectedProtocol = switchingPolicy.select(predictedOutcome);
+            SelectedProtocol expectedProtocol = switchingPolicy.select(actualOutcome);
+
+            TransactionPlan evaluationPlan = buildTransactionPlan(scenario, nodeCatalog, TRANSACTIONS_PER_OBSERVATION);
+            for (SelectedProtocol protocol : SelectedProtocol.values()) {
+                SimulationResult result = simulation.run(scenario, nodeCatalog, protocol, evaluationPlan);
+                protocolPerformance.get(protocol).add(result.metrics());
+                if (protocol == selectedProtocol) {
+                    adaptivePerformance.add(result.metrics());
+                }
+            }
 
             if (predictedOutcome == actualOutcome) {
                 outcomeCorrect++;
+            }
+            if (selectedProtocol == expectedProtocol) {
+                switchCorrect++;
             }
             examples++;
             totalCommittedTransactions += windowSummary.committedTransactions();
             totalTransactions += windowSummary.totalTransactions();
             labelCounts.merge(actualOutcome, 1, Integer::sum);
+            selectedProtocolCounts.merge(selectedProtocol, 1, Integer::sum);
 
             predictor.train(features, actualOutcome);
 
@@ -202,6 +238,8 @@ public class ExperimentRunner {
                             + " participantSet=" + scenario.participantSetKey()
                             + " predictedOutcome=" + predictedOutcome
                             + " actualOutcome=" + actualOutcome
+                            + " selectedProtocol=" + selectedProtocol
+                            + " expectedProtocol=" + expectedProtocol
                             + " windowAbortRate=" + windowSummary.abortRate()
                             + " windowCommitRate=" + windowSummary.commitRate()
                             + " features={" + features.explanationSummary() + "}"
@@ -215,16 +253,23 @@ public class ExperimentRunner {
         }
 
         if (examples == 0 || totalTransactions == 0L) {
-            return new OnlineSummary(0, 0.0, 0.0, 0.0, Map.of());
+            return new OnlineSummary(0, 0.0, 0.0, 0.0, Map.of(), 0.0, Map.of(), Map.of(), Performance.empty());
         }
 
         double averageWindowCommitRate = totalCommittedTransactions / (double) totalTransactions;
+        Map<SelectedProtocol, Performance> performanceSummary = new EnumMap<>(SelectedProtocol.class);
+        protocolPerformance.forEach((protocol, accumulator) ->
+                performanceSummary.put(protocol, accumulator.summary()));
         return new OnlineSummary(
                 examples,
                 outcomeCorrect / (double) examples,
                 averageWindowCommitRate,
                 1.0 - averageWindowCommitRate,
-                Map.copyOf(labelCounts)
+                Map.copyOf(labelCounts),
+                switchCorrect / (double) examples,
+                Map.copyOf(selectedProtocolCounts),
+                Map.copyOf(performanceSummary),
+                adaptivePerformance.summary()
         );
     }
 
@@ -300,6 +345,23 @@ public class ExperimentRunner {
         return List.copyOf(stream);
     }
 
+    private static int maxExamples(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--max-examples=")) {
+                int value = Integer.parseInt(arg.substring("--max-examples=".length()));
+                if (value < 1) {
+                    throw new IllegalArgumentException("--max-examples must be at least 1");
+                }
+                return value;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private static List<Scenario> limitExamples(List<Scenario> scenarios, int maxExamples) {
+        return scenarios.subList(0, Math.min(scenarios.size(), maxExamples));
+    }
+
     private static <T> void shuffleInPlace(List<T> items, Random random) {
         for (int i = items.size() - 1; i > 0; i--) {
             int j = random.nextInt(i + 1);
@@ -334,7 +396,56 @@ public class ExperimentRunner {
             double outcomeAccuracy,
             double averageWindowCommitRate,
             double averageWindowAbortRate,
-            Map<TransactionOutcomeClass, Integer> labelCounts
+            Map<TransactionOutcomeClass, Integer> labelCounts,
+            double switchAccuracy,
+            Map<SelectedProtocol, Integer> selectedProtocolCounts,
+            Map<SelectedProtocol, Performance> protocolPerformance,
+            Performance adaptivePerformance
     ) {
+    }
+
+    private record Performance(
+            long transactions,
+            double averageLatencyMs,
+            double commitRate,
+            double averageMessages,
+            double averageLogWrites,
+            double averageBlockingMs
+    ) {
+        private static Performance empty() {
+            return new Performance(0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        }
+    }
+
+    private static final class PerformanceAccumulator {
+        private long transactions;
+        private long latencyMs;
+        private long committed;
+        private long messages;
+        private long logWrites;
+        private long blockingMs;
+
+        private void add(TxMetrics metrics) {
+            transactions++;
+            latencyMs += metrics.latencyMs();
+            committed += metrics.committed() ? 1 : 0;
+            messages += metrics.messageCount();
+            logWrites += metrics.totalLogWrites();
+            blockingMs += metrics.blockingTimeMs();
+        }
+
+        private Performance summary() {
+            if (transactions == 0) {
+                return Performance.empty();
+            }
+            return new Performance(
+                    transactions,
+                    latencyMs / (double) transactions,
+                    committed / (double) transactions,
+                    messages / (double) transactions,
+                    logWrites / (double) transactions,
+                    blockingMs / (double) transactions
+            );
+        }
     }
 }
