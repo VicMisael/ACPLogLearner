@@ -1,12 +1,79 @@
 # Saved Agent Context
 
-Date saved: 2026-08-17
+Date saved: 2026-08-28
 
 ## Project Summary
 
 A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. `VFDT` is the current candidate model, but the thesis is not restricted to VFDT and may evaluate other models.
 
 The current thesis execution plan is documented in `docs/alps-thesis-plan.md`.
+
+## Core Thesis Decision: Execution Data and MariaDB Logs
+
+The central thesis idea is to use both transaction-execution data and MariaDB
+log-derived data to determine the best atomic commit protocol for the current
+context. The target is not merely to predict whether a transaction will commit
+or abort. The evaluation must show whether ALPS selects the protocol with the
+lowest expected cost among classic 2PC, presumed abort, and presumed commit.
+
+The intended input combines:
+
+- features known from the current request before protocol selection, such as
+  transaction type, participants, participant count, local/distributed shape,
+  warehouses, and order-line count;
+- historical execution metrics from completed transactions, such as commit and
+  abort rates, phase latency, blocking time, messages, timeouts, and errors;
+- historical MariaDB log and storage-engine metrics, especially InnoDB redo/WAL
+  activity, LSN movement, redo writes and flushes, checkpoint pressure, XA state
+  and duration from Performance Schema, and later possibly row-level binary-log
+  information.
+
+`AlpsFeatures` is the planned immutable model-input record. It is not an
+alternative to using MariaDB logs: it is the destination for request features
+and historical features extracted from those logs.
+
+### Leakage rule
+
+The MariaDB logs and final execution metrics produced by transaction `T` cannot
+be used to select the protocol for `T`. They become historical input for later
+transactions. The required online order is:
+
+1. build features for `T` from its request and history through `T-1`;
+2. predict context and select the protocol;
+3. execute `T`;
+4. collect execution and MariaDB log deltas for `T`;
+5. derive feedback, update rolling history, and train the model.
+
+### MariaDB log terminology and collection direction
+
+- InnoDB redo log is the MariaDB mechanism corresponding to physical WAL and is
+  the primary log-derived signal of interest.
+- MariaDB binary log is a separate logical change stream. It may later provide
+  table/row-change features, but it is not the same as InnoDB redo.
+- Do not begin by parsing the internal bytes of `ib_logfile0`. First collect
+  supported observable metrics such as `Innodb_lsn_current`,
+  `Innodb_lsn_flushed`, `Innodb_log_writes`, checkpoint age, and relevant
+  Performance Schema transaction/XA data.
+- Correlate observations with the Java `TransactionId`/XA XID where supported.
+- Under concurrent execution, global InnoDB counter deltas contain activity from
+  other transactions; experiments must account for this with serialized trials,
+  controlled isolation, or explicit attribution limits.
+
+### Best-protocol evaluation
+
+The three context labels (`LIKELY_COMMIT`, `LIKELY_ABORT`, and `UNCERTAIN`) may
+remain as an explainable intermediate layer, but classification accuracy alone
+does not establish that the best protocol was selected. Controlled experiments
+must replay equivalent transaction specifications under all three protocols and
+derive an oracle protocol from correctness and raw cost metrics. Cost evaluation
+should preserve latency, MariaDB redo/WAL activity, logical log writes, message
+count, blocking time, timeouts, and failures separately before applying any
+weighted scalar objective.
+
+The next log-focused implementation direction is to introduce records and
+collectors equivalent to `MariaDbLogSnapshot`, `MariaDbLogDelta`,
+`MariaDbWalMetricsCollector`, `RollingMetricsRegistry`, and the expanded
+`AlpsFeatures`.
 
 ## Current Event-Pipeline Decision
 
