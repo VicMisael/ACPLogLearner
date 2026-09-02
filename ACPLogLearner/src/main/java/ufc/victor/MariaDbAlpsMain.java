@@ -269,7 +269,7 @@ public final class MariaDbAlpsMain {
             int itemId = ((transactionIndex * 101 + nodeNumber * 17 + line * 997) % 100_000) + 1;
             lines.add(new MariaDbTpccNewOrderWorkload.OrderLine(itemId, (line % 10) + 1));
         }
-        return new MariaDbTpccNewOrderWorkload(1, districtId, customerId, lines);
+        return new MariaDbTpccNewOrderWorkload(nodeNumber, districtId, customerId, lines);
     }
 
     private static boolean waitForTerminal(

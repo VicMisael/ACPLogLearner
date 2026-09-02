@@ -12,21 +12,28 @@ Compose provider once:
 sudo apt-get install podman-compose
 ```
 
-## Initial smoke load
+## Sharded smoke load
 
-Load one warehouse into each MariaDB node:
+Load one globally identified warehouse into each MariaDB node:
 
 ```bash
 ./scripts/benchmarksql.sh load-all
 ```
 
 The command starts the databases, builds the BenchmarkSQL image when necessary,
-loads its schema and data into each `acp` database, and verifies warehouse and
-item counts. Override the small default only after the smoke load succeeds:
+loads its schema and data, remaps every TPC-C warehouse reference, and verifies
+the resulting ownership:
 
-```bash
-BMSQL_WAREHOUSES=25 BMSQL_LOAD_WORKERS=4 ./scripts/benchmarksql.sh load-all
-```
+| MariaDB node | Global warehouse |
+| --- | ---: |
+| `mariadb-1` | `1` |
+| `mariadb-2` | `2` |
+| `mariadb-3` | `3` |
+| `mariadb-4` | `4` |
+
+Every node contains the replicated `bmsql_item` catalog, but warehouse-owned
+rows (`district`, `customer`, `stock`, orders, and history) exist only on the
+owning node. `BMSQL_WAREHOUSES` must remain `1` for this topology.
 
 BenchmarkSQL database builds are not idempotent. If its tables already exist,
 explicitly destroy them before loading again:
@@ -38,6 +45,13 @@ explicitly destroy them before loading again:
 
 `destroy-all` removes the `bmsql_*` tables but does not remove the project's
 `tx_journal` table or the MariaDB volumes.
+
+To migrate four datasets loaded by an older checkout (all using warehouse `1`)
+without reloading their data, run:
+
+```bash
+./scripts/benchmarksql.sh shard-all
+```
 
 ## Verification and smoke benchmark
 
@@ -52,8 +66,8 @@ connectivity and transaction execution, not to produce thesis measurements.
 ## Distributed XA New-Order smoke test
 
 After loading the four databases, the Java coordinator can execute one atomic
-transaction whose four XA branches each perform a New-Order transaction against
-that node's local BenchmarkSQL dataset:
+transaction across the four warehouse shards. XA branch `P1` uses warehouse `1`,
+`P2` uses warehouse `2`, and so on:
 
 ```bash
 ./gradlew runMariaDbTpccCluster
@@ -78,9 +92,8 @@ ACP_TPCC_TRANSACTIONS=10 \
 `TWO_PC_PRESUMED_COMMIT`.
 
 This entry point is an integration and protocol smoke test, not a compliant
-TPC-C benchmark. Each XA branch currently creates a local New-Order on warehouse
-`1` in an independent database. Global warehouse sharding and the VFDT-driven
-multi-run evaluation should be layered on only after this path commits reliably.
+TPC-C benchmark. A logical test transaction creates one New-Order branch in
+each selected warehouse and commits or rolls all branches back atomically.
 
 ## ALPS prequential experiment on MariaDB
 
@@ -125,14 +138,12 @@ before shutting down actors. This is especially important for presumed commit,
 where the coordinator can forget a committed transaction before participants
 finish applying `XA COMMIT`.
 
-## Sharding limitation
+## How the shard load works
 
-The upstream loader always generates warehouse identifiers starting at `1`.
-Consequently, loading 25 warehouses on every node creates local ranges `1-25` on
-all four databases. The runtime properties `useWarehouseFrom` and
-`useWarehouseTo` do not change loader identifiers.
-
-Global ranges such as `1-25`, `26-50`, `51-75`, and `76-100` therefore require a
-small loader extension or a separate deterministic data-partitioning step. Until
-that is implemented and verified, this setup should be described as four
-independent BenchmarkSQL datasets rather than a globally sharded TPC-C dataset.
+The upstream loader generates warehouse identifiers starting at `1`. After each
+one-warehouse load, `scripts/benchmarksql.sh` rewrites all warehouse primary and
+foreign-key fields to the node's global warehouse ID with foreign-key checks
+temporarily disabled in the same database session. `verify` checks every
+warehouse-bearing table and fails if any reference points outside that node's
+warehouse. For BenchmarkSQL's single-node smoke run, the generated properties
+restrict execution to the warehouse owned by that node.

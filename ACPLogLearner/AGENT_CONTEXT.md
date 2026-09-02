@@ -8,6 +8,10 @@ A master's thesis project investigating how online machine-learning models can s
 
 The current thesis execution plan is documented in `docs/alps-thesis-plan.md`.
 
+The test topology now assigns one global warehouse to each MariaDB node:
+warehouse `1` to `mariadb-1`, through warehouse `4` to `mariadb-4`. The load
+script remaps and verifies all warehouse-bearing BenchmarkSQL rows after load.
+
 ## Core Thesis Decision: Execution Data and MariaDB Logs
 
 The central thesis idea is to use both transaction-execution data and MariaDB
@@ -87,9 +91,12 @@ behind the same event-publishing abstraction.
 
 Set up and validate the four-instance MariaDB environment using Docker Compose. This database environment will support XA smoke testing now and the later distributed `TPC-C-like` workload.
 
-The repository now includes a pinned, containerized BenchmarkSQL setup for loading and validating a small independent dataset on each MariaDB node. The one-warehouse smoke dataset has been loaded successfully on all four nodes.
+The repository now includes a pinned, containerized BenchmarkSQL setup for
+loading and validating one global warehouse shard on each MariaDB node. The
+four-shard smoke dataset has been loaded and verified successfully.
 
-The next step is to wire the Java application to the four MariaDB nodes and their BenchmarkSQL datasets. Each protocol participant must receive its own JDBC/XA configuration instead of sharing the single `ACP_MARIADB_URL` currently used by `MariaDbMain`.
+The Java cluster and ALPS runners are wired to four JDBC/XA configurations and
+use the participant number as the global warehouse ID.
 
 ## Current Direction
 
@@ -100,8 +107,10 @@ The next step is to wire the Java application to the four MariaDB nodes and thei
 - Do not rely on `BenchmarkSQL` for distributed coordination.
 - Keep distributed `XA/2PC` under the Java coordinator in this repo.
 - Target 4 MariaDB instances.
-- Preferred data layout: warehouse sharding across the 4 nodes.
-- Next realistic implementation step: implement one TPC-C transaction type first, preferably `NewOrder`, inside a `MariaDbXaWorkload`.
+- Data layout: one warehouse shard per MariaDB node for tests.
+- Extend the existing `NewOrder` implementation from independent local branches
+  into one logical TPC-C New-Order whose home and remote-stock work is routed to
+  the warehouse-owning shards.
 
 ## What Was Verified
 
@@ -111,9 +120,10 @@ The next step is to wire the Java application to the four MariaDB nodes and thei
 - The current MariaDB XA smoke test ran successfully against `mariadb-1`.
 - The journal table persisted one committed row per participant for the same transaction id.
 - BenchmarkSQL was built from pinned upstream commit `98f5cb4b446f4296ca5e85ad27303482a6bbd624`.
-- The BenchmarkSQL schema, indexes, foreign keys, and one-warehouse smoke dataset were loaded successfully on all four MariaDB nodes.
-- Each node was verified with `1` row in `bmsql_warehouse` and `100000` rows in `bmsql_item`.
-- The host has Podman but still needs a permanently installed Compose provider (`sudo apt-get install podman-compose`); validation used a temporary extracted copy because sudo authentication was unavailable to the agent.
+- The BenchmarkSQL schema, indexes, foreign keys, and sharded smoke dataset were loaded successfully on all four MariaDB nodes.
+- Each node was verified with warehouse ID `N` only on `mariadb-N` and `100000` replicated rows in `bmsql_item`.
+- The host has Podman and `podman-compose` installed; the four-node Compose
+  workflow and BenchmarkSQL tool container have been executed successfully.
 
 ## Important Technical Clarification
 
@@ -145,12 +155,12 @@ Therefore:
 
 Preferred layout: shard warehouses across the four MariaDB nodes.
 
-Example:
+Test layout:
 
-- `mariadb-1`: warehouses `1-25`
-- `mariadb-2`: warehouses `26-50`
-- `mariadb-3`: warehouses `51-75`
-- `mariadb-4`: warehouses `76-100`
+- `mariadb-1`: warehouse `1`
+- `mariadb-2`: warehouse `2`
+- `mariadb-3`: warehouse `3`
+- `mariadb-4`: warehouse `4`
 
 Then the Java coordinator routes each logical transaction to the correct participant databases and runs:
 
@@ -160,16 +170,49 @@ Then the Java coordinator routes each logical transaction to the correct partici
 - `XA PREPARE`
 - `XA COMMIT` or `XA ROLLBACK`
 
-## Known Code Limitation
+## Known Scope Limitation
 
-The current `MariaDbMain` still uses a single `ACP_MARIADB_URL`, so all logical participants still point to one MariaDB instance. The infrastructure now supports 4 DB instances, but the Java side still needs per-participant JDBC configuration.
+The current distributed smoke workload creates a New-Order in each participating
+warehouse as branches of one atomic transaction. It does not yet model a single
+TPC-C New-Order with remote supplier order lines split across warehouse shards.
 
-The upstream BenchmarkSQL loader always starts warehouse identifiers at `1`; `useWarehouseFrom` and `useWarehouseTo` only constrain benchmark execution. Loading each node independently therefore does not yet produce the intended global warehouse ranges. A loader extension or deterministic partitioning step is required before calling the four datasets globally sharded.
+## Current TPC-C Fidelity Status
+
+The current setup is materially closer to TPC-C than the earlier four-copy
+smoke environment:
+
+- the schema, initial data, indexes, and constraints come from the pinned
+  BenchmarkSQL distribution;
+- warehouse identifiers are globally partitioned as `P1/W1`, `P2/W2`,
+  `P3/W3`, and `P4/W4`;
+- each node contains its own warehouse-dependent rows and a complete replicated
+  `bmsql_item` catalog;
+- the Java coordinator executes real MariaDB XA branches containing New-Order
+  SQL and can atomically commit work on all four databases.
+
+It is not yet a faithful distributed TPC-C transaction mix. In particular, the
+current XA runner groups four otherwise independent local New-Orders under one
+global commit decision. A faithful distributed New-Order must create one order
+at a home warehouse and route only remote supplier stock operations to the
+shards that own those supplier warehouses. Payment must likewise support the
+TPC-C remote-customer case. Order-Status, Delivery, and Stock-Level must be
+integrated before describing the distributed runner as a complete TPC-C mix.
+
+Use this description for the current system:
+
+> TPC-C-like workload based on BenchmarkSQL, with a warehouse-sharded dataset
+> and MariaDB XA execution of New-Order branches across four databases.
+
+Do not claim official TPC-C compliance. The setup has not implemented the full
+distributed transaction semantics, measurement rules, or audited TPC-C
+requirements.
 
 ## Next Steps
 
-1. Wire the Java participants to distinct JDBC/XA URLs for the four MariaDB nodes instead of one shared `ACP_MARIADB_URL`.
-2. Verify the Java application can address and execute XA work against each node's BenchmarkSQL dataset.
-3. Implement global warehouse sharding by node.
-4. Implement one realistic workload class first, preferably `MariaDbTpccNewOrderWorkload`.
-5. Keep the journal workload available as a smoke-test fallback.
+1. Model one logical New-Order with remote supplier lines split between the home
+   and stock-owning shards.
+2. Add the remote-customer Payment case and then the remaining TPC-C transaction
+   types.
+3. Preserve the BenchmarkSQL transaction mix and rollback proportions in the
+   distributed workload generator.
+4. Keep the journal workload available as a smoke-test fallback.

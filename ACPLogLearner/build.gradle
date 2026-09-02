@@ -31,6 +31,12 @@ test {
     useJUnitPlatform()
 }
 
+tasks.withType(JavaExec).configureEach {
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
 tasks.register('runExperiment', JavaExec) {
     group = 'application'
     description = 'Runs the adaptive atomic commit experiment harness.'

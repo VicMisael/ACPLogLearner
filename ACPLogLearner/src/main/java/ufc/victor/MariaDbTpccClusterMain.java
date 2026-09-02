@@ -47,7 +47,7 @@ public final class MariaDbTpccClusterMain {
 
         System.out.println("=== MARIADB CLUSTER / BENCHMARKSQL NEW-ORDER ===");
         System.out.println("protocol=" + protocol + ", transactions=" + transactions);
-        System.out.println("Data model: warehouse 1 is local to each database; this is not yet a globally sharded TPC-C dataset.");
+        System.out.println("Shard map: warehouse N is stored exclusively on mariadb-N.");
 
         int committed = 0;
         long totalLatencyMs = 0L;
@@ -144,7 +144,7 @@ public final class MariaDbTpccClusterMain {
             int itemId = ((transactionIndex * 101 + nodeNumber * 17 + line * 997) % 100_000) + 1;
             lines.add(new MariaDbTpccNewOrderWorkload.OrderLine(itemId, (line % 10) + 1));
         }
-        return new MariaDbTpccNewOrderWorkload(1, districtId, customerId, lines);
+        return new MariaDbTpccNewOrderWorkload(nodeNumber, districtId, customerId, lines);
     }
 
     private static boolean waitForTerminal(

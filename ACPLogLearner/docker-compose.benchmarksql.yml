@@ -12,6 +12,8 @@ services:
       BMSQL_PASSWORD: ${ACP_MARIADB_PASSWORD:-acp_secret}
       BMSQL_WAREHOUSES: ${BMSQL_WAREHOUSES:-1}
       BMSQL_LOAD_WORKERS: ${BMSQL_LOAD_WORKERS:-2}
+      BMSQL_WAREHOUSE_ID: ${BMSQL_WAREHOUSE_ID:--1}
+      BMSQL_TOTAL_WAREHOUSES: ${BMSQL_TOTAL_WAREHOUSES:-1}
     volumes:
       - benchmarksql-results:/benchmarksql/results
     networks:
