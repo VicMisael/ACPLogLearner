@@ -1,9 +1,13 @@
 package ufc.victor;
 
-import ufc.victor.db.mariadb.MariaDbTpccNewOrderWorkload;
 import ufc.victor.db.mariadb.CompletionTrackingTransactionalResource;
+import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlan;
+import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlanner;
 import ufc.victor.db.mariadb.MariaDbXaConfig;
 import ufc.victor.db.mariadb.MariaDbXaTransactionalResource;
+import ufc.victor.db.mariadb.TpccNewOrderSpec;
+import ufc.victor.db.mariadb.TpccNewOrderSpecFactory;
+import ufc.victor.db.mariadb.WarehouseRouter;
 import ufc.victor.experiment.TransactionOutcomeClass;
 import ufc.victor.experiment.TransactionOutcomeLabeler;
 import ufc.victor.experiment.VfdtProtocolSwitchingPolicy;
@@ -26,6 +30,7 @@ import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.AdaptiveParticipantDispatcher;
 import ufc.victor.protocol.participant.TransactionalResource;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -58,11 +63,14 @@ public final class MariaDbAlpsMain {
     private MariaDbAlpsMain() {
     }
 
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException, SQLException {
         int examples = positiveIntEnv("ACP_ALPS_EXAMPLES", 30);
         int windowSize = positiveIntEnv("ACP_ALPS_WINDOW_SIZE", 3);
         long timeoutMs = positiveLongEnv("ACP_ALPS_TIMEOUT_MS", 60_000L);
         Map<Integer, MariaDbXaConfig> configs = configs();
+        MariaDbTpccNewOrderPlanner planner = new MariaDbTpccNewOrderPlanner(
+                new WarehouseRouter(configs)
+        );
         Map<Integer, Double> abortProbabilities = abortProbabilities();
 
         VFDTTransactionOutcomePredictor model =
@@ -103,7 +111,7 @@ public final class MariaDbAlpsMain {
                         offset
                 );
                 RealTransactionResult result = runTransaction(
-                        configs,
+                        planner,
                         participantNumbers,
                         votes,
                         selectedProtocol,
@@ -155,13 +163,17 @@ public final class MariaDbAlpsMain {
     }
 
     private static RealTransactionResult runTransaction(
-            Map<Integer, MariaDbXaConfig> configs,
+            MariaDbTpccNewOrderPlanner planner,
             List<Integer> participantNumbers,
             Map<Integer, Boolean> votes,
             SelectedProtocol protocol,
             int transactionIndex,
             long timeoutMs
-    ) throws InterruptedException {
+    ) throws InterruptedException, SQLException {
+        TpccNewOrderSpec spec = TpccNewOrderSpecFactory.controlled(
+                participantNumbers, transactionIndex
+        );
+        MariaDbTpccNewOrderPlan plan = planner.plan(spec);
         SimulationMessageBus network = new SimulationMessageBus(1, 3);
         TransactionId txId = TransactionId.newTransaction();
         NodeId coordinatorId = new NodeId("COORD");
@@ -174,15 +186,16 @@ public final class MariaDbAlpsMain {
         Set<Node> participantNodes = new LinkedHashSet<>();
 
         network.register(coordinatorId, coordinatorActor);
-        for (int nodeNumber : participantNumbers) {
-            NodeId participantId = new NodeId("P" + nodeNumber);
+        for (MariaDbTpccNewOrderPlan.Branch branch : plan.branches()) {
+            int nodeNumber = branch.warehouseId();
+            NodeId participantId = new NodeId(branch.participantId());
             LocalNode participantNode = new LocalNode(participantId);
             ActorNode participantActor = new ActorNode(participantId);
             InMemoryParticipantLogManager participantLog = new InMemoryParticipantLogManager();
             TransactionalResource databaseResource = new MariaDbXaTransactionalResource(
-                    configs.get(nodeNumber),
+                    branch.config(),
                     participantId.value(),
-                    workload(nodeNumber, transactionIndex)
+                    branch.workload()
             );
             TransactionalResource votingResource = new VotingResource(
                     votes.get(nodeNumber),
@@ -259,17 +272,6 @@ public final class MariaDbAlpsMain {
             votes.put(nodeNumber, deterministicSample >= abortProbabilities.get(nodeNumber));
         }
         return Map.copyOf(votes);
-    }
-
-    private static MariaDbTpccNewOrderWorkload workload(int nodeNumber, int transactionIndex) {
-        int districtId = ((transactionIndex + nodeNumber - 1) % 10) + 1;
-        int customerId = ((transactionIndex * 37 + nodeNumber - 1) % 3_000) + 1;
-        List<MariaDbTpccNewOrderWorkload.OrderLine> lines = new ArrayList<>();
-        for (int line = 0; line < 5; line++) {
-            int itemId = ((transactionIndex * 101 + nodeNumber * 17 + line * 997) % 100_000) + 1;
-            lines.add(new MariaDbTpccNewOrderWorkload.OrderLine(itemId, (line % 10) + 1));
-        }
-        return new MariaDbTpccNewOrderWorkload(nodeNumber, districtId, customerId, lines);
     }
 
     private static boolean waitForTerminal(

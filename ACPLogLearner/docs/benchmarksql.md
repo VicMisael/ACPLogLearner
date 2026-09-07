@@ -88,12 +88,24 @@ ACP_TPCC_TRANSACTIONS=10 \
 ./gradlew runMariaDbTpccCluster
 ```
 
+To exercise atomic rollback with the same cross-shard New-Order shape, replace
+the final item with the TPC-C invalid item identifier:
+
+```bash
+ACP_PROTOCOL=TWO_PC \
+ACP_TPCC_FORCE_ROLLBACK=true \
+./gradlew runMariaDbTpccCluster
+```
+
 `ACP_PROTOCOL` accepts `TWO_PC`, `TWO_PC_PRESUMED_ABORT`, or
 `TWO_PC_PRESUMED_COMMIT`.
 
 This entry point is an integration and protocol smoke test, not a compliant
-TPC-C benchmark. A logical test transaction creates one New-Order branch in
-each selected warehouse and commits or rolls all branches back atomically.
+TPC-C benchmark. It creates one logical New-Order on warehouse `1`. Order and
+order-line rows remain on that home shard, while stock updates for remotely
+supplied lines execute on warehouses `2`, `3`, and `4` as branches of the same
+XA transaction. The controlled smoke specification intentionally touches all
+four shards; it does not represent the standard TPC-C remote-line frequency.
 
 ## ALPS prequential experiment on MariaDB
 
@@ -147,3 +159,11 @@ temporarily disabled in the same database session. `verify` checks every
 warehouse-bearing table and fails if any reference points outside that node's
 warehouse. For BenchmarkSQL's single-node smoke run, the generated properties
 restrict execution to the warehouse owned by that node.
+
+The sharding step removes BenchmarkSQL's `ol_stock_fkey` from
+`bmsql_order_line`. That foreign key assumes the supplying stock row is in the
+same database as the order line, which is false for a remote supplier in the
+four-database topology. The order-to-order-line foreign key remains local. The
+Java transaction planner routes each `ol_supply_w_id` to its owning shard, and
+cross-shard stock references must be checked by the experiment correctness
+verifier.

@@ -4,7 +4,7 @@ Date saved: 2026-08-28
 
 ## Project Summary
 
-A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. `VFDT` is the current candidate model, but the thesis is not restricted to VFDT and may evaluate other models.
+A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. `VFDT` is the current prototype and first candidate to evaluate, not the final model decision. The thesis is not restricted to VFDT and must keep the classifier replaceable so that other online models and the threshold-only baseline can be evaluated without changing protocol execution, feature collection, or policy selection.
 
 The current thesis execution plan is documented in `docs/alps-thesis-plan.md`.
 
@@ -172,9 +172,12 @@ Then the Java coordinator routes each logical transaction to the correct partici
 
 ## Known Scope Limitation
 
-The current distributed smoke workload creates a New-Order in each participating
-warehouse as branches of one atomic transaction. It does not yet model a single
-TPC-C New-Order with remote supplier order lines split across warehouse shards.
+The distributed smoke workload now models one logical New-Order with its order
+rows on a home shard and remote stock updates on supplier shards. Its
+deterministic smoke specification intentionally exercises every selected shard;
+the standard TPC-C remote-line distribution, complete transaction output/tax
+calculation, snapshot-based replay, and the other TPC-C transaction types remain
+to be implemented.
 
 ## Current TPC-C Fidelity Status
 
@@ -187,16 +190,17 @@ smoke environment:
   `P3/W3`, and `P4/W4`;
 - each node contains its own warehouse-dependent rows and a complete replicated
   `bmsql_item` catalog;
-- the Java coordinator executes real MariaDB XA branches containing New-Order
-  SQL and can atomically commit work on all four databases.
+- the Java coordinator executes one logical New-Order whose home order rows and
+  supplier stock updates are split into real MariaDB XA branches;
+- committed remote lines set `o_all_local=0`, retain their global
+  `ol_supply_w_id`, and increment `s_remote_cnt` on the owning supplier shard;
+- invalid-final-item trials roll back home and supplier changes under all three
+  atomic commit protocols and leave no prepared XA branches.
 
-It is not yet a faithful distributed TPC-C transaction mix. In particular, the
-current XA runner groups four otherwise independent local New-Orders under one
-global commit decision. A faithful distributed New-Order must create one order
-at a home warehouse and route only remote supplier stock operations to the
-shards that own those supplier warehouses. Payment must likewise support the
-TPC-C remote-customer case. Order-Status, Delivery, and Stock-Level must be
-integrated before describing the distributed runner as a complete TPC-C mix.
+It is not yet a complete distributed TPC-C transaction mix. Payment must support
+the TPC-C remote-customer case, and Order-Status, Delivery, and Stock-Level must
+be integrated. The controlled generator must also reproduce the standard
+transaction and rollback proportions before thesis measurements begin.
 
 Use this description for the current system:
 
@@ -209,8 +213,8 @@ requirements.
 
 ## Next Steps
 
-1. Model one logical New-Order with remote supplier lines split between the home
-   and stock-owning shards.
+1. Add automated database integration tests and invariant checks for the
+   globally sharded New-Order.
 2. Add the remote-customer Payment case and then the remaining TPC-C transaction
    types.
 3. Preserve the BenchmarkSQL transaction mix and rollback proportions in the

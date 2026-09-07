@@ -66,7 +66,28 @@ run_for_node() {
 
 shard_node() {
   local node="$1"
+  local warehouse_id
   echo "==> Assigning global warehouse ${node} to mariadb-${node}"
+  warehouse_id="$(compose exec -T "mariadb-${node}" mariadb \
+    --user="${ACP_MARIADB_USER:-acp}" \
+    --password="${ACP_MARIADB_PASSWORD:-acp_secret}" \
+    "${ACP_MARIADB_DATABASE:-acp}" \
+    --batch --skip-column-names \
+    --execute="SELECT CASE WHEN COUNT(*) = 1 THEN MIN(w_id) ELSE 0 END FROM bmsql_warehouse;")"
+
+  if [[ "${warehouse_id}" == "${node}" ]]; then
+    compose exec -T "mariadb-${node}" mariadb \
+      --user="${ACP_MARIADB_USER:-acp}" \
+      --password="${ACP_MARIADB_PASSWORD:-acp_secret}" \
+      "${ACP_MARIADB_DATABASE:-acp}" \
+      --execute="ALTER TABLE bmsql_order_line DROP FOREIGN KEY IF EXISTS ol_stock_fkey;"
+    return
+  fi
+  if [[ "${warehouse_id}" != "1" ]]; then
+    echo "mariadb-${node} must contain exactly warehouse 1 before remapping; found ${warehouse_id}." >&2
+    return 1
+  fi
+
   compose exec -T "mariadb-${node}" mariadb \
     --user="${ACP_MARIADB_USER:-acp}" \
     --password="${ACP_MARIADB_PASSWORD:-acp_secret}" \
@@ -88,6 +109,7 @@ shard_node() {
       UPDATE bmsql_warehouse SET w_id = ${node} WHERE w_id = 1;
       COMMIT;
       SET FOREIGN_KEY_CHECKS = 1;
+      ALTER TABLE bmsql_order_line DROP FOREIGN KEY IF EXISTS ol_stock_fkey;
     "
 }
 
@@ -127,7 +149,11 @@ verify() {
           (SELECT COUNT(*) FROM bmsql_new_order WHERE no_w_id <> ${node}) = 0 AND
           (SELECT COUNT(*) FROM bmsql_oorder WHERE o_w_id <> ${node}) = 0 AND
           (SELECT COUNT(*) FROM bmsql_order_line
-             WHERE ol_w_id <> ${node} OR ol_supply_w_id <> ${node}) = 0 AND
+             WHERE ol_w_id <> ${node} OR ol_supply_w_id NOT BETWEEN 1 AND 4) = 0 AND
+          (SELECT COUNT(*) FROM information_schema.referential_constraints
+             WHERE constraint_schema = DATABASE()
+               AND table_name = 'bmsql_order_line'
+               AND constraint_name = 'ol_stock_fkey') = 0 AND
           (SELECT COUNT(*) FROM bmsql_stock WHERE s_w_id <> ${node}) = 0
         THEN CONCAT('shard-ok: warehouse ', ${node})
         ELSE CONCAT('shard-invalid: warehouse ', ${node}) END;

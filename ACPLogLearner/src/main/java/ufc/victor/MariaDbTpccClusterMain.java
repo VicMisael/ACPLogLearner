@@ -1,9 +1,13 @@
 package ufc.victor;
 
-import ufc.victor.db.mariadb.MariaDbTpccNewOrderWorkload;
 import ufc.victor.db.mariadb.CompletionTrackingTransactionalResource;
+import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlan;
+import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlanner;
 import ufc.victor.db.mariadb.MariaDbXaConfig;
 import ufc.victor.db.mariadb.MariaDbXaTransactionalResource;
+import ufc.victor.db.mariadb.TpccNewOrderSpec;
+import ufc.victor.db.mariadb.TpccNewOrderSpecFactory;
+import ufc.victor.db.mariadb.WarehouseRouter;
 import ufc.victor.localenv.InMemoryCoordinatorLogManager;
 import ufc.victor.localenv.InMemoryParticipantLogManager;
 import ufc.victor.localenv.LocalNode;
@@ -22,12 +26,14 @@ import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.AdaptiveParticipantDispatcher;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
-/** Runs distributed XA New-Order work against the four-node MariaDB cluster. */
+/** Runs one logical New-Order with XA work split across the four warehouse shards. */
 public final class MariaDbTpccClusterMain {
 
     private static final int NODE_COUNT = 4;
@@ -35,7 +41,7 @@ public final class MariaDbTpccClusterMain {
     private MariaDbTpccClusterMain() {
     }
 
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException, SQLException {
         String user = envOrDefault("ACP_MARIADB_USER", "acp");
         String password = envOrDefault("ACP_MARIADB_PASSWORD", "acp_secret");
         String database = envOrDefault("ACP_MARIADB_DATABASE", "acp");
@@ -43,16 +49,28 @@ public final class MariaDbTpccClusterMain {
                 envOrDefault("ACP_PROTOCOL", SelectedProtocol.TWO_PC.name()).toUpperCase()
         );
         int transactions = positiveIntEnv("ACP_TPCC_TRANSACTIONS", 1);
-        List<MariaDbXaConfig> configs = configs(user, password, database);
+        boolean forceRollback = Boolean.parseBoolean(
+                envOrDefault("ACP_TPCC_FORCE_ROLLBACK", "false")
+        );
+        Map<Integer, MariaDbXaConfig> configs = configs(user, password, database);
+        MariaDbTpccNewOrderPlanner planner = new MariaDbTpccNewOrderPlanner(
+                new WarehouseRouter(configs)
+        );
 
         System.out.println("=== MARIADB CLUSTER / BENCHMARKSQL NEW-ORDER ===");
-        System.out.println("protocol=" + protocol + ", transactions=" + transactions);
+        System.out.println("protocol=" + protocol + ", transactions=" + transactions
+                + ", forceRollback=" + forceRollback);
         System.out.println("Shard map: warehouse N is stored exclusively on mariadb-N.");
+        System.out.println("One home order is split into local and remote-supplier XA branches.");
 
         int committed = 0;
         long totalLatencyMs = 0L;
         for (int index = 0; index < transactions; index++) {
-            RunResult result = runTransaction(configs, protocol, index);
+            TpccNewOrderSpec spec = TpccNewOrderSpecFactory.controlled(
+                    List.of(1, 2, 3, 4), index
+            );
+            if (forceRollback) spec = TpccNewOrderSpecFactory.withInvalidFinalItem(spec);
+            RunResult result = runTransaction(planner.plan(spec), protocol);
             committed += result.committed() ? 1 : 0;
             totalLatencyMs += result.latencyMs();
             System.out.println("tx=" + (index + 1) + ", committed=" + result.committed()
@@ -64,9 +82,8 @@ public final class MariaDbTpccClusterMain {
     }
 
     private static RunResult runTransaction(
-            List<MariaDbXaConfig> configs,
-            SelectedProtocol protocol,
-            int transactionIndex
+            MariaDbTpccNewOrderPlan plan,
+            SelectedProtocol protocol
     ) throws InterruptedException {
         SimulationMessageBus network = new SimulationMessageBus(1, 3);
         TransactionId txId = TransactionId.newTransaction();
@@ -76,19 +93,18 @@ public final class MariaDbTpccClusterMain {
         InMemoryCoordinatorLogManager coordinatorLog = new InMemoryCoordinatorLogManager();
         List<ActorNode> participantActors = new ArrayList<>();
         List<CompletionTrackingTransactionalResource> participantResources = new ArrayList<>();
-        Set<Node> participantNodes = new LinkedHashSet<>();
+        Set<Node> participantNodes = new java.util.LinkedHashSet<>();
 
         network.register(coordinatorId, coordinatorActor);
-        for (int index = 0; index < configs.size(); index++) {
-            int nodeNumber = index + 1;
-            NodeId participantId = new NodeId("P" + nodeNumber);
+        for (MariaDbTpccNewOrderPlan.Branch branch : plan.branches()) {
+            NodeId participantId = new NodeId(branch.participantId());
             LocalNode participantNode = new LocalNode(participantId);
             ActorNode participantActor = new ActorNode(participantId);
             CompletionTrackingTransactionalResource participantResource =
                     new CompletionTrackingTransactionalResource(new MariaDbXaTransactionalResource(
-                            configs.get(index),
+                            branch.config(),
                             participantId.value(),
-                            workload(nodeNumber, transactionIndex)
+                            branch.workload()
                     ));
             IParticipant participant = new AdaptiveParticipantDispatcher(
                     participantNode,
@@ -136,17 +152,6 @@ public final class MariaDbTpccClusterMain {
         return new RunResult(committed, latencyMs);
     }
 
-    private static MariaDbTpccNewOrderWorkload workload(int nodeNumber, int transactionIndex) {
-        int districtId = ((transactionIndex + nodeNumber - 1) % 10) + 1;
-        int customerId = ((transactionIndex * 37 + nodeNumber - 1) % 3_000) + 1;
-        List<MariaDbTpccNewOrderWorkload.OrderLine> lines = new ArrayList<>();
-        for (int line = 0; line < 5; line++) {
-            int itemId = ((transactionIndex * 101 + nodeNumber * 17 + line * 997) % 100_000) + 1;
-            lines.add(new MariaDbTpccNewOrderWorkload.OrderLine(itemId, (line % 10) + 1));
-        }
-        return new MariaDbTpccNewOrderWorkload(nodeNumber, districtId, customerId, lines);
-    }
-
     private static boolean waitForTerminal(
             SelectedProtocol protocol,
             TransactionId txId,
@@ -171,17 +176,17 @@ public final class MariaDbTpccClusterMain {
         return false;
     }
 
-    private static List<MariaDbXaConfig> configs(String user, String password, String database) {
-        List<MariaDbXaConfig> configs = new ArrayList<>(NODE_COUNT);
+    private static Map<Integer, MariaDbXaConfig> configs(String user, String password, String database) {
+        Map<Integer, MariaDbXaConfig> configs = new LinkedHashMap<>();
         for (int node = 1; node <= NODE_COUNT; node++) {
             String defaultUrl = "jdbc:mariadb://127.0.0.1:" + (33_060 + node) + "/" + database;
-            configs.add(new MariaDbXaConfig(
+            configs.put(node, new MariaDbXaConfig(
                     envOrDefault("ACP_MARIADB_" + node + "_URL", defaultUrl),
                     user,
                     password
             ));
         }
-        return List.copyOf(configs);
+        return Map.copyOf(configs);
     }
 
     private static int positiveIntEnv(String name, int defaultValue) {
