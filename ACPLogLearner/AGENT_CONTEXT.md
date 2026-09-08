@@ -74,10 +74,14 @@ should preserve latency, MariaDB redo/WAL activity, logical log writes, message
 count, blocking time, timeouts, and failures separately before applying any
 weighted scalar objective.
 
-The next log-focused implementation direction is to introduce records and
-collectors equivalent to `MariaDbLogSnapshot`, `MariaDbLogDelta`,
-`MariaDbWalMetricsCollector`, `RollingMetricsRegistry`, and the expanded
-`AlpsFeatures`.
+The first redo/WAL collection slice is implemented. `RedoMetricsCollector`
+exposes snapshots independently of MariaDB, `MariaDbWalMetricsCollector` reads
+supported global InnoDB counters over separate JDBC connections, and
+`RedoDelta` calculates per-node changes while preserving unavailable values and
+detecting counter resets/server restarts. `MariaDbTpccClusterMain` surrounds
+each sharded New-Order with snapshots and reports a delta after every XA branch
+has resolved. The next log-focused work is structured trial events,
+`RollingMetricsRegistry`, and the expanded `AlpsFeatures`.
 
 ## Current Event-Pipeline Decision
 
@@ -214,9 +218,11 @@ requirements.
 ## Next Steps
 
 1. Add automated database integration tests and invariant checks for the
-   globally sharded New-Order.
-2. Add the remote-customer Payment case and then the remaining TPC-C transaction
-   types.
-3. Preserve the BenchmarkSQL transaction mix and rollback proportions in the
-   distributed workload generator.
-4. Keep the journal workload available as a smoke-test fallback.
+   globally sharded New-Order and redo/WAL capture boundary.
+2. Emit structured transaction/participant metric events and feed only prior
+   transactions' redo deltas into rolling historical features.
+3. Build reproducible same-specification trials under all three protocols for
+   the oracle dataset.
+4. Add the remote-customer Payment case and then the remaining TPC-C transaction
+   types while preserving the standard mix and rollback proportions.
+5. Keep the journal workload available as a smoke-test fallback.

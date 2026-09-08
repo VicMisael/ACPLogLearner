@@ -107,6 +107,24 @@ supplied lines execute on warehouses `2`, `3`, and `4` as branches of the same
 XA transaction. The controlled smoke specification intentionally touches all
 four shards; it does not represent the standard TPC-C remote-line frequency.
 
+### Redo/WAL metrics
+
+The cluster runner takes one snapshot immediately before each logical
+New-Order and another after all XA branches resolve. It prints a delta per
+participant with:
+
+- current and flushed LSN advancement;
+- bytes written to the InnoDB redo log;
+- redo write requests, writes, and waits;
+- checkpoint age before and after the transaction;
+- counter reset or server restart detection.
+
+Snapshots use dedicated JDBC connections and `SHOW GLOBAL STATUS`. A metric
+that is absent in the running MariaDB version or invalidated by a counter reset
+is printed as `unavailable`, not zero. These are server-global deltas, so a
+concurrent workload can contribute to them. Keep thesis attribution trials
+serialized or explicitly report that limitation.
+
 ## ALPS prequential experiment on MariaDB
 
 Run the current ML model and policy against real XA New-Order transactions:

@@ -3,6 +3,7 @@ package ufc.victor;
 import ufc.victor.db.mariadb.CompletionTrackingTransactionalResource;
 import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlan;
 import ufc.victor.db.mariadb.MariaDbTpccNewOrderPlanner;
+import ufc.victor.db.mariadb.MariaDbWalMetricsCollector;
 import ufc.victor.db.mariadb.MariaDbXaConfig;
 import ufc.victor.db.mariadb.MariaDbXaTransactionalResource;
 import ufc.victor.db.mariadb.TpccNewOrderSpec;
@@ -25,12 +26,17 @@ import ufc.victor.protocol.coordinator.log.CoordinatorLogRecordType;
 import ufc.victor.protocol.coordinator.node.Node;
 import ufc.victor.protocol.coordinator.node.NodeId;
 import ufc.victor.protocol.participant.AdaptiveParticipantDispatcher;
+import ufc.victor.telemetry.redo.RedoDelta;
+import ufc.victor.telemetry.redo.RedoMetricsCollector;
+import ufc.victor.telemetry.redo.RedoSnapshot;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /** Runs one logical New-Order with XA work split across the four warehouse shards. */
@@ -56,6 +62,9 @@ public final class MariaDbTpccClusterMain {
         MariaDbTpccNewOrderPlanner planner = new MariaDbTpccNewOrderPlanner(
                 new WarehouseRouter(configs)
         );
+        RedoMetricsCollector redoCollector = new MariaDbWalMetricsCollector(
+                redoConfigs(configs)
+        );
 
         System.out.println("=== MARIADB CLUSTER / BENCHMARKSQL NEW-ORDER ===");
         System.out.println("protocol=" + protocol + ", transactions=" + transactions
@@ -70,11 +79,14 @@ public final class MariaDbTpccClusterMain {
                     List.of(1, 2, 3, 4), index
             );
             if (forceRollback) spec = TpccNewOrderSpecFactory.withInvalidFinalItem(spec);
-            RunResult result = runTransaction(planner.plan(spec), protocol);
+            RunResult result = runTransaction(planner.plan(spec), protocol, redoCollector);
             committed += result.committed() ? 1 : 0;
             totalLatencyMs += result.latencyMs();
             System.out.println("tx=" + (index + 1) + ", committed=" + result.committed()
                     + ", latencyMs=" + result.latencyMs());
+            result.redoByNode().forEach((node, delta) ->
+                    System.out.println("  redo node=" + node + formatRedo(delta))
+            );
         }
 
         System.out.println("Summary: committed=" + committed + "/" + transactions
@@ -83,7 +95,8 @@ public final class MariaDbTpccClusterMain {
 
     private static RunResult runTransaction(
             MariaDbTpccNewOrderPlan plan,
-            SelectedProtocol protocol
+            SelectedProtocol protocol,
+            RedoMetricsCollector redoCollector
     ) throws InterruptedException {
         SimulationMessageBus network = new SimulationMessageBus(1, 3);
         TransactionId txId = TransactionId.newTransaction();
@@ -133,23 +146,66 @@ public final class MariaDbTpccClusterMain {
         coordinatorActor.start();
         participantActors.forEach(ActorNode::start);
 
-        long startedAt = System.currentTimeMillis();
-        network.send(Message.of(MessageType.COMMIT_REQUEST, txId, coordinatorNode, coordinatorNode));
-        boolean finished = waitForTerminal(
-                protocol, txId, coordinatorLog, participantResources, 60_000L
-        );
-        long latencyMs = System.currentTimeMillis() - startedAt;
-        boolean committed = finished && coordinatorLog.read(txId).stream()
-                .anyMatch(record -> record.type() == CoordinatorLogRecordType.GLOBAL_COMMIT);
-
-        network.shutdown();
-        coordinatorActor.stop();
-        coordinatorActor.getWorkerThread().join(500L);
-        for (ActorNode actor : participantActors) {
-            actor.stop();
-            actor.getWorkerThread().join(500L);
+        try {
+            Map<NodeId, RedoSnapshot> before = captureRedo(participantNodes, redoCollector);
+            long startedAt = System.currentTimeMillis();
+            network.send(Message.of(MessageType.COMMIT_REQUEST, txId, coordinatorNode, coordinatorNode));
+            boolean finished = waitForTerminal(
+                    protocol, txId, coordinatorLog, participantResources, 60_000L
+            );
+            long latencyMs = System.currentTimeMillis() - startedAt;
+            boolean committed = finished && coordinatorLog.read(txId).stream()
+                    .anyMatch(record -> record.type() == CoordinatorLogRecordType.GLOBAL_COMMIT);
+            Map<NodeId, RedoSnapshot> after = captureRedo(participantNodes, redoCollector);
+            Map<NodeId, RedoDelta> redoByNode = new LinkedHashMap<>();
+            before.forEach((node, snapshot) -> redoByNode.put(
+                    node, RedoDelta.between(snapshot, after.get(node))
+            ));
+            return new RunResult(
+                    committed,
+                    latencyMs,
+                    Collections.unmodifiableMap(new LinkedHashMap<>(redoByNode))
+            );
+        } finally {
+            network.shutdown();
+            coordinatorActor.stop();
+            coordinatorActor.getWorkerThread().join(500L);
+            for (ActorNode actor : participantActors) {
+                actor.stop();
+                actor.getWorkerThread().join(500L);
+            }
         }
-        return new RunResult(committed, latencyMs);
+    }
+
+    private static Map<NodeId, RedoSnapshot> captureRedo(
+            Set<Node> participantNodes,
+            RedoMetricsCollector collector
+    ) {
+        Map<NodeId, RedoSnapshot> snapshots = new LinkedHashMap<>();
+        participantNodes.forEach(node -> snapshots.put(node.id, collector.capture(node.id)));
+        return snapshots;
+    }
+
+    private static Map<NodeId, MariaDbXaConfig> redoConfigs(Map<Integer, MariaDbXaConfig> configs) {
+        Map<NodeId, MariaDbXaConfig> byNode = new LinkedHashMap<>();
+        configs.forEach((warehouse, config) -> byNode.put(new NodeId("P" + warehouse), config));
+        return byNode;
+    }
+
+    private static String formatRedo(RedoDelta delta) {
+        return ", lsnAdvanced=" + value(delta.lsnAdvanced())
+                + ", flushedLsnAdvanced=" + value(delta.flushedLsnAdvanced())
+                + ", bytesWritten=" + value(delta.redoBytesWritten())
+                + ", writeRequests=" + value(delta.logWriteRequests())
+                + ", logWrites=" + value(delta.logWrites())
+                + ", logWaits=" + value(delta.logWaits())
+                + ", checkpointAgeBefore=" + value(delta.checkpointAgeBeforeBytes())
+                + ", checkpointAgeAfter=" + value(delta.checkpointAgeAfterBytes())
+                + ", resetDetected=" + delta.counterResetDetected();
+    }
+
+    private static String value(OptionalLong value) {
+        return value.isPresent() ? Long.toString(value.getAsLong()) : "unavailable";
     }
 
     private static boolean waitForTerminal(
@@ -200,6 +256,10 @@ public final class MariaDbTpccClusterMain {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
-    private record RunResult(boolean committed, long latencyMs) {
+    private record RunResult(
+            boolean committed,
+            long latencyMs,
+            Map<NodeId, RedoDelta> redoByNode
+    ) {
     }
 }
