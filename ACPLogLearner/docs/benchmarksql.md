@@ -139,12 +139,34 @@ With no configured abort injection, every participant has an abort rate of zero.
 This is the natural cluster smoke case and is expected to produce only the
 `LIKELY_COMMIT` class when the databases are healthy.
 
+`ACP_ALPS_HISTORY_WINDOW_SIZE` controls the number of completed transactions
+retained in each global and per-participant rolling history (default `30`). The
+feature vector is created before an observation window executes; its structured
+trial records are added only after each transaction completes, so current redo
+deltas cannot leak into their own prediction.
+
+`ACP_ALPS_FEATURE_PROFILE` controls the VFDT feature ablation. Its default is
+`GENERIC`, which excludes transaction names, warehouse fields, raw participant
+IDs, and per-node identity. Available profiles are:
+
+- `GENERIC`: transaction shape, global history, and topology-neutral summaries
+  of the selected participants;
+- `GENERIC_WITH_NODE_IDENTITY`: generic features plus participant-ID indicators
+  and per-node history;
+- `GENERIC_WITH_WORKLOAD`: generic features plus transaction type and named
+  workload attributes;
+- `COMPLETE`: generic, node-identity, and workload-specific features.
+
+The runner prints `vfdtFeatures` at startup so every experiment records the
+exact model input schema.
+
 To validate that the end-to-end pipeline can learn a participant pattern, use a
 controlled deterministic profile:
 
 ```bash
 ACP_ALPS_EXAMPLES=30 \
 ACP_ALPS_WINDOW_SIZE=3 \
+ACP_ALPS_FEATURE_PROFILE=GENERIC_WITH_NODE_IDENTITY \
 ACP_ALPS_P1_ABORT_RATE=0.0 \
 ACP_ALPS_P2_ABORT_RATE=0.1 \
 ACP_ALPS_P3_ABORT_RATE=0.4 \

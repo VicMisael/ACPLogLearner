@@ -16,5 +16,4 @@ contribuir para o ALPS ou para a dissertação.
 
 Adicione aqui um link para cada nova ideia:
 
-- Nenhuma ideia registrada ainda.
-
+- [Predição online de resultados: VFDT categórico e regressão contínua](predicao-online-resultados.md)

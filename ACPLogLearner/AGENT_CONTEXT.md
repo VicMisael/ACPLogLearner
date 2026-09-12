@@ -1,6 +1,6 @@
 # Saved Agent Context
 
-Date saved: 2026-08-28
+Date saved: 2026-09-12
 
 ## Project Summary
 
@@ -58,6 +58,9 @@ transactions. The required online order is:
   supported observable metrics such as `Innodb_lsn_current`,
   `Innodb_lsn_flushed`, `Innodb_log_writes`, checkpoint age, and relevant
   Performance Schema transaction/XA data.
+- Direct `ib_logfile` parsing remains out of scope unless supported counters are
+  shown to be insufficient. Its internal format is version-dependent, global to
+  the server, and does not solve per-transaction attribution by itself.
 - Correlate observations with the Java `TransactionId`/XA XID where supported.
 - Under concurrent execution, global InnoDB counter deltas contain activity from
   other transactions; experiments must account for this with serialized trials,
@@ -80,8 +83,33 @@ supported global InnoDB counters over separate JDBC connections, and
 `RedoDelta` calculates per-node changes while preserving unavailable values and
 detecting counter resets/server restarts. `MariaDbTpccClusterMain` surrounds
 each sharded New-Order with snapshots and reports a delta after every XA branch
-has resolved. The next log-focused work is structured trial events,
-`RollingMetricsRegistry`, and the expanded `AlpsFeatures`.
+has resolved.
+
+The deltas are now carried in immutable `TransactionTrialRecord` values produced
+by `MariaDbTpccTransactionRunner`. A trial contains transaction/specification
+IDs, protocol, outcome, total and phase latency, message and protocol-log counts,
+and per-participant redo metrics with reset/unavailable flags. Both the cluster
+smoke runner and `MariaDbAlpsMain` use this shared execution path.
+
+`RollingMetricsRegistry` maintains bounded global and per-participant histories
+and builds expanded `AlpsFeatures` before execution. Completed trials are added
+only afterward, enforcing the `T-1` leakage boundary. The MariaDB ALPS runner
+feeds these request and historical metrics to VFDT.
+
+The learning boundary is workload-independent. `TransactionContext` contains
+generic identity, transaction type, participants, and named numeric workload
+attributes. `TransactionContextExtractor<S>` adapts a workload specification;
+`TpccNewOrderFeatureExtractor` is the TPC-C-specific adapter. Neither
+`AlpsFeatures`, `RollingMetricsRegistry`, nor the VFDT predictor imports or
+hard-codes TPC-C concepts.
+
+The default thesis feature profile is `GENERIC`. It trains on domain-neutral
+transaction shape (read/write/insert/update/delete counts, estimated rows,
+participant fan-out, and remote-operation ratio), global rolling history, and
+mean/worst-case summaries across the selected participants. It does not expose
+raw participant IDs, transaction names, or TPC-C fields. The node-aware,
+workload-aware, and complete profiles are retained explicitly for feature
+ablation experiments, selected through `ACP_ALPS_FEATURE_PROFILE`.
 
 ## Current Event-Pipeline Decision
 
@@ -90,6 +118,55 @@ introduce JSONL, Kafka, or Redpanda into the core implementation at this stage.
 Machine-readable aggregate experiment results may still be exported after a run.
 JSONL replay and Kafka/Redpanda streaming remain documented future extensions
 behind the same event-publishing abstraction.
+
+## Online Learning and Outcome Vocabulary
+
+ALPS is an online-learning system evaluated prequentially. For each observation,
+it must predict first, execute unseen work, derive the observed label, score the
+earlier prediction, and only then train the model. There is no conventional
+random train/test split in the live path, and all reported accuracy, macro-F1,
+regret, and adaptation results must preserve temporal order.
+
+Keep three different concepts separate:
+
+- execution status describes what happened to an individual transaction, with
+  `COMMITTED`, `ABORTED`, and `TIMED_OUT` currently represented by
+  `TrialOutcome`; later recovery experiments may justify `FAILED`, `IN_DOUBT`,
+  or heuristic-resolution statuses;
+- observed context is the current three-class learning target:
+  `LIKELY_COMMIT`, `UNCERTAIN`, or `LIKELY_ABORT`;
+- oracle protocol is the lowest-cost correct protocol found by replaying the
+  same specification under all candidates, with ties and invalid trials stored
+  explicitly rather than disguised as transaction outcomes.
+
+More execution statuses can be added without necessarily increasing the number
+of classifier classes. Expanding the online-learning target is a thesis design
+decision and must be supported by enough temporally ordered examples per class.
+A strong later comparison is the current context-plus-policy formulation versus
+direct online prediction of the oracle protocol; do not conflate either target
+with low-level execution failure states.
+
+The intended extension is multiple online transaction-outcome targets, not
+direct prediction of the best protocol and not merely more values in
+`TrialOutcome`. Model these as separate learner heads over the same leakage-safe
+`AlpsFeatures`, rather than a Cartesian product of labels:
+
+- commit/abort likelihood or calibrated commit probability;
+- expected total and phase latency;
+- expected redo bytes, LSN advancement, redo writes, and redo waits;
+- expected message and protocol-log counts;
+- optional timeout, blocking, or recovery-risk probabilities when enough events
+  exist to support those targets.
+
+The policy consumes this predicted outcome/cost bundle and selects classic 2PC,
+presumed abort, or presumed commit. The paired-trial oracle remains an evaluation
+baseline for policy quality and regret; it is not the primary learner target.
+
+Each head must predict before execution and train only when its own feedback is
+available. Missing or invalid metrics must skip that head's update rather than
+be encoded as zero. Protocol-specific outcome estimates require controlled
+exploration or same-specification replay because a live transaction reveals
+feedback only for the selected protocol.
 
 ## Immediate Goal
 
@@ -219,10 +296,9 @@ requirements.
 
 1. Add automated database integration tests and invariant checks for the
    globally sharded New-Order and redo/WAL capture boundary.
-2. Emit structured transaction/participant metric events and feed only prior
-   transactions' redo deltas into rolling historical features.
-3. Build reproducible same-specification trials under all three protocols for
+2. Build reproducible same-specification trials under all three protocols for
    the oracle dataset.
+3. Export machine-readable aggregate experiment results after each run.
 4. Add the remote-customer Payment case and then the remaining TPC-C transaction
    types while preserving the standard mix and rollback proportions.
 5. Keep the journal workload available as a smoke-test fallback.
