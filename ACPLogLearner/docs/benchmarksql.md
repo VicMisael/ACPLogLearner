@@ -131,19 +131,33 @@ Run the current ML model and policy against real XA New-Order transactions:
 
 ```bash
 ACP_ALPS_EXAMPLES=10 \
-ACP_ALPS_WINDOW_SIZE=2 \
+ACP_ALPS_HISTORY_WINDOW_SIZE=30 \
+ACP_ALPS_LABEL_WINDOW_SIZE=30 \
 ./gradlew runMariaDbAlps
 ```
 
-With no configured abort injection, every participant has an abort rate of zero.
-This is the natural cluster smoke case and is expected to produce only the
-`LIKELY_COMMIT` class when the databases are healthy.
+The live learner is a categorical multi-head VFDT trained exclusively with
+classic 2PC executions. It predicts three protocol-independent outcomes:
+completion (`COMMIT`, `ABORT`, or `TIMEOUT`), total latency (`LOW`, `MEDIUM`, or
+`HIGH`), and InnoDB redo bytes (`LOW`, `MEDIUM`, or `HIGH`). Protocol identity is
+not a model feature. After prediction, the policy maps the completion
+distribution to a recommendation. The baseline runner records that
+recommendation but always executes classic 2PC.
 
 `ACP_ALPS_HISTORY_WINDOW_SIZE` controls the number of completed transactions
-retained in each global and per-participant rolling history (default `30`). The
-feature vector is created before an observation window executes; its structured
-trial records are added only after each transaction completes, so current redo
-deltas cannot leak into their own prediction.
+retained in each global and per-participant rolling history (default `30`).
+`ACP_ALPS_LABEL_WINDOW_SIZE` controls the valid latency and redo samples used by
+the categorical thresholds (default `30`, minimum `3`). Features and thresholds
+are frozen before execution; the current trial enters both histories only after
+prediction, execution, evaluation, and training. Transaction `T` therefore sees
+history only through `T-1`.
+
+Until a metric has three valid samples, fixed defaults define its classes.
+Afterward, independent online 33rd and 66th percentiles define the boundaries
+for latency and redo. Configure the defaults with `ACP_ALPS_LATENCY_LOW_MS`,
+`ACP_ALPS_LATENCY_MEDIUM_MS`, `ACP_ALPS_REDO_LOW_BYTES`, and
+`ACP_ALPS_REDO_MEDIUM_BYTES`. A timeout skips the censored latency update;
+unavailable redo skips the redo update. Completion always receives a label.
 
 `ACP_ALPS_FEATURE_PROFILE` controls the VFDT feature ablation. Its default is
 `GENERIC`, which excludes transaction names, warehouse fields, raw participant
@@ -165,7 +179,8 @@ controlled deterministic profile:
 
 ```bash
 ACP_ALPS_EXAMPLES=30 \
-ACP_ALPS_WINDOW_SIZE=3 \
+ACP_ALPS_HISTORY_WINDOW_SIZE=30 \
+ACP_ALPS_LABEL_WINDOW_SIZE=30 \
 ACP_ALPS_FEATURE_PROFILE=GENERIC_WITH_NODE_IDENTITY \
 ACP_ALPS_P1_ABORT_RATE=0.0 \
 ACP_ALPS_P2_ABORT_RATE=0.1 \
@@ -178,12 +193,54 @@ The abort-rate variables are fault-injection controls, not measured properties
 of the containers. Results from this mode demonstrate learnability under a known
 signal and must not be presented as a naturally discovered database behavior.
 
-For every observation window, the runner performs:
+Every live example therefore comes from the same execution baseline. Presumed
+abort and presumed commit require separate same-specification oracle experiments
+before their relative latency, redo, and recovery effects can be claimed. No
+protocol exploration is used in baseline training.
+
+Set `ACP_ALPS_SCENARIO=PHASED` to exercise abrupt drift. The deterministic
+schedule cycles through `BASELINE`, `LATENCY_SPIKE`, `ABORT_SPIKE`,
+`COMBINED_SPIKE`, and `RECOVERY`. `ACP_ALPS_PHASE_LENGTH` controls transactions
+per phase, `ACP_ALPS_LATENCY_SPIKE_MS` injects explicit fixed message latency in
+both directions, and `ACP_ALPS_ABORT_SPIKE_RATE` sets the minimum participant
+abort probability during abort phases. Phase identity and injected values are
+reported for analysis but are deliberately excluded from the model features, so
+the experiment measures adaptation from prior observations rather than leaking
+the active condition.
+
+```bash
+ACP_ALPS_EXAMPLES=100 \
+ACP_ALPS_SCENARIO=PHASED \
+ACP_ALPS_PHASE_LENGTH=20 \
+ACP_ALPS_LATENCY_SPIKE_MS=40 \
+ACP_ALPS_ABORT_SPIKE_RATE=0.70 \
+./gradlew runMariaDbAlps
+```
+
+The final report includes both global and per-phase prequential accuracy, label
+distribution, and selected-protocol counts. The schedule also keeps participant
+fan-out and remote-line ratio varying through the controlled specification set,
+which exercises redo and distributed-transaction pressure without fabricating
+redo counters.
+
+For every transaction, the runner performs:
 
 ```text
-features -> context prediction -> protocol policy -> real XA transactions
-         -> observed context label -> online model update
+features and thresholds from T-1
+-> predict protocol-independent completion, latency, and redo
+-> derive a counterfactual protocol recommendation
+-> execute one real classic 2PC XA transaction
+-> label and score the baseline prediction
+-> train heads with valid classic-2PC feedback
+-> update threshold and rolling-history windows
 ```
+
+The current recommendation is driven by the completion distribution: commit
+favors presumed commit, abort favors presumed abort, and ties favor classic 2PC.
+Latency and redo characterize baseline cost but cannot distinguish protocols
+until analytical deltas or oracle observations are available. The runner prints
+prequential accuracy per head, label and recommendation counts, exact feature
+names, and the learned rules for all three trees.
 
 The runner waits for every participant's database commit or rollback to return
 before shutting down actors. This is especially important for presumed commit,

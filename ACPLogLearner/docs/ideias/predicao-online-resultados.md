@@ -1,5 +1,11 @@
 # Predição online de resultados: VFDT categórico e regressão contínua
 
+> Nota de decisão: a variante condicionada ao protocolo descrita abaixo foi
+> preservada como ideia de ablação. A arquitetura principal passou a aprender
+> outcomes independentes do protocolo usando somente execuções de 2PC clássico;
+> a política recomenda o protocolo depois da previsão e o oracle mede os efeitos
+> específicos de presumed abort e presumed commit.
+
 ## Motivação
 
 O ALPS deve prever o comportamento esperado de cada protocolo candidato e deixar
@@ -139,9 +145,16 @@ nunca devem ser preenchidos com zero.
 5. Comparação de acurácia/macro-F1, erro de regressão, custo, regret, adaptação
    após drift, tamanho do modelo e overhead de inferência/treino.
 
-## Decisão provisória
+## Estado da implementação anterior
 
-Implementar primeiro os três heads categóricos de conclusão, latência e redo,
-pois reutilizam o VFDT existente. Manter a abstração dos heads independente do
-algoritmo para permitir a abordagem contínua sem alterar coleta, execução ou
-política.
+A abordagem A está implementada com três VFDTs independentes para conclusão,
+latência total e bytes de redo. Cada árvore recebe o protocolo candidato como
+feature e produz classe, distribuição de probabilidades e confiança. O runner
+consulta os três protocolos, aplica uma política ponderada, executa apenas o
+escolhido e treina somente os heads com feedback válido.
+
+Os limites de latência e redo usam quantis online independentes calculados
+somente sobre janelas anteriores e congelados antes de cada transação. O warmup
+cobre cada protocolo uma vez e a exploração epsilon-greedy determinística reduz
+o viés do feedback parcial. A abordagem B permanece como a próxima alternativa
+para preservar custos contínuos e medir erro e regret em unidades naturais.

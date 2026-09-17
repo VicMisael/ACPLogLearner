@@ -1,10 +1,10 @@
 # Saved Agent Context
 
-Date saved: 2026-09-12
+Date saved: 2026-09-17
 
 ## Project Summary
 
-A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. `VFDT` is the current prototype and first candidate to evaluate, not the final model decision. The thesis is not restricted to VFDT and must keep the classifier replaceable so that other online models and the threshold-only baseline can be evaluated without changing protocol execution, feature collection, or policy selection.
+A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. The current implementation uses categorical multi-head `VFDT`, but VFDT is only the first candidate. The thesis must keep the learner replaceable so continuous online predictors and non-learning baselines can reuse protocol execution, feature collection, labels, and policy selection.
 
 The current thesis execution plan is documented in `docs/alps-thesis-plan.md`.
 
@@ -15,10 +15,10 @@ script remaps and verifies all warehouse-bearing BenchmarkSQL rows after load.
 ## Core Thesis Decision: Execution Data and MariaDB Logs
 
 The central thesis idea is to use both transaction-execution data and MariaDB
-log-derived data to determine the best atomic commit protocol for the current
-context. The target is not merely to predict whether a transaction will commit
-or abort. The evaluation must show whether ALPS selects the protocol with the
-lowest expected cost among classic 2PC, presumed abort, and presumed commit.
+log-derived data to predict a bundle of outcomes for every candidate atomic
+commit protocol. A separate policy selects the lowest expected cost among
+classic 2PC, presumed abort, and presumed commit. Evaluation must compare that
+choice with paired-trial oracle data rather than rely on accuracy alone.
 
 The intended input combines:
 
@@ -94,7 +94,8 @@ smoke runner and `MariaDbAlpsMain` use this shared execution path.
 `RollingMetricsRegistry` maintains bounded global and per-participant histories
 and builds expanded `AlpsFeatures` before execution. Completed trials are added
 only afterward, enforcing the `T-1` leakage boundary. The MariaDB ALPS runner
-feeds these request and historical metrics to VFDT.
+feeds these request and historical metrics to three protocol-independent VFDT
+heads trained exclusively from classic 2PC executions.
 
 The learning boundary is workload-independent. `TransactionContext` contains
 generic identity, transaction type, participants, and named numeric workload
@@ -133,8 +134,9 @@ Keep three different concepts separate:
   `COMMITTED`, `ABORTED`, and `TIMED_OUT` currently represented by
   `TrialOutcome`; later recovery experiments may justify `FAILED`, `IN_DOUBT`,
   or heuristic-resolution statuses;
-- observed context is the current three-class learning target:
-  `LIKELY_COMMIT`, `UNCERTAIN`, or `LIKELY_ABORT`;
+- predicted transaction outcomes are the current targets: completion
+  (`COMMIT`, `ABORT`, `TIMEOUT`), latency class, and redo class (both
+  `LOW`, `MEDIUM`, `HIGH`);
 - oracle protocol is the lowest-cost correct protocol found by replaying the
   same specification under all candidates, with ties and invalid trials stored
   explicitly rather than disguised as transaction outcomes.
@@ -142,21 +144,23 @@ Keep three different concepts separate:
 More execution statuses can be added without necessarily increasing the number
 of classifier classes. Expanding the online-learning target is a thesis design
 decision and must be supported by enough temporally ordered examples per class.
-A strong later comparison is the current context-plus-policy formulation versus
-direct online prediction of the oracle protocol; do not conflate either target
-with low-level execution failure states.
+A strong later comparison is categorical multi-head outcome prediction versus
+continuous multi-head prediction. Direct online prediction of the oracle
+protocol may remain an ablation, but is not the primary formulation.
 
-The intended extension is multiple online transaction-outcome targets, not
-direct prediction of the best protocol and not merely more values in
-`TrialOutcome`. Model these as separate learner heads over the same leakage-safe
-`AlpsFeatures`, rather than a Cartesian product of labels:
+The first multiple-target implementation is complete. It uses separate heads
+over the same leakage-safe `AlpsFeatures`, rather than a Cartesian product of
+labels:
 
-- commit/abort likelihood or calibrated commit probability;
-- expected total and phase latency;
-- expected redo bytes, LSN advancement, redo writes, and redo waits;
-- expected message and protocol-log counts;
-- optional timeout, blocking, or recovery-risk probabilities when enough events
-  exist to support those targets.
+- completion category and its class-probability distribution;
+- total-latency category and its class-probability distribution;
+- redo-bytes category and its class-probability distribution.
+
+Latency and redo use independently adaptive 33rd/66th-percentile thresholds
+computed from bounded valid history through `T-1`; each transaction freezes and
+stores the thresholds used for its labels. Phase latency, LSN, redo writes and
+waits, messages, protocol-log writes, blocking, and recovery risk remain future
+heads once sufficient training data and suitable labels exist.
 
 The policy consumes this predicted outcome/cost bundle and selects classic 2PC,
 presumed abort, or presumed commit. The paired-trial oracle remains an evaluation
@@ -164,13 +168,131 @@ baseline for policy quality and regret; it is not the primary learner target.
 
 Each head must predict before execution and train only when its own feedback is
 available. Missing or invalid metrics must skip that head's update rather than
-be encoded as zero. Protocol-specific outcome estimates require controlled
-exploration or same-specification replay because a live transaction reveals
-feedback only for the selected protocol.
+be encoded as zero.
+
+The chosen baseline architecture trains only from classic 2PC. `MariaDbAlpsMain`
+builds features and freezes thresholds, predicts protocol-independent outcomes,
+derives a protocol recommendation from the completion distribution, executes
+classic 2PC, evaluates the prior prediction, trains valid heads, and only then
+updates histories. No `candidate_protocol_*` feature or live protocol exploration
+belongs in this baseline learner. Presumed abort and presumed commit effects are
+introduced later through analytical protocol-cost rules and same-specification
+oracle trials; recommendations in the baseline run are counterfactual and are
+not executed.
+
+The runner also supports a deterministic `PHASED` scenario for online drift
+experiments: baseline, network-latency spike, abort spike, combined spike, and
+recovery. Network delay is injected explicitly through the transaction runner's
+message bus rather than hidden sleeps in protocol code. The active phase is
+reported but excluded from model input; per-phase summaries expose adaptation
+and recovery behavior.
+
+## Concept Drift Decision
+
+Concept drift means that the relationship between model input and target changes
+over time: `P_t(Y|X) != P_(t+delta)(Y|X)`. In ALPS, similar transaction shape,
+participants, and history may begin producing a different completion, latency,
+or redo outcome. Distinguish abrupt, gradual, incremental,
+and recurring drift from isolated outliers and from pure covariate drift, where
+only the frequency of input contexts changes.
+
+The current VFDT is incremental but has no explicit forgetting or drift
+detection. The 150-transaction phased experiment showed this limitation: after
+abort-heavy phases, recovery completion accuracy was `0.0333`, with presumed
+abort still selected for 26 of 30 healthy transactions. The latency and redo
+heads remained single-leaf majority classifiers.
+
+The next model comparison should preserve the exact features, labels, classic
+2PC transaction sequence, and prequential evaluation:
+
+1. current VFDT as the non-adaptive incremental baseline;
+2. Hoeffding Adaptive Tree with ADWIN as the primary drift-aware, interpretable
+   alternative;
+3. Adaptive Random Forest as a stronger but less interpretable adaptive
+   ensemble;
+4. fixed-window VFDT as a simple forgetting baseline.
+
+Hoeffding Adaptive Tree is the recommended next implementation. ADWIN monitors
+error distributions with an adaptive window; HAT trains alternate branches and
+replaces old branches when the alternatives become more accurate. Experiments
+must report macro-F1 and balanced accuracy per phase, drift-detection delay,
+false alarms, transactions to recovery, cumulative cost/regret, model size, and
+training/inference overhead—not only global accuracy.
+
+A previous, protocol-conditioned 2,000-transaction phased VFDT experiment used
+400 examples per
+phase and completed in `3m48s`. Global prequential accuracy was `0.9375` for
+completion, `0.7135` for latency, and `0.6020` for redo. Recovery completion
+accuracy reached `0.9350`. The final trees had respectively 31, 25, and 29 nodes;
+redo split first on generic `remote_operation_ratio`. These results show that
+the earlier 150-example run was too short to judge representational capacity,
+but do not prove drift adaptation because each phase supplied 400 examples and
+rolling historical features exposed regime changes.
+
+The long run also exposed a labeling concern: moving quantiles redefine cost
+classes relative to the current regime. Once a latency-spike window fills,
+roughly `230 ms` can become `LOW`. Thesis experiments must compare fixed absolute
+thresholds, calibration-period thresholds frozen before evaluation, and
+continuous prediction. Always preserve and report raw latency and redo values.
+
+After adopting classic 2PC as the exclusive learning baseline, a new phased run
+executed 2,000/2,000 transactions with `TWO_PC`; protocol identity was absent
+from the 37 generic features. Accuracy was `0.9215` for completion, `0.8205` for
+latency, and `0.6095` for redo. The policy recommendations were 1 classic 2PC,
+815 presumed abort, and 1,184 presumed commit, but these are counterfactual and
+do not establish protocol cost savings. In recovery it still recommended
+presumed abort 47 times before returning mostly to presumed commit. All three
+trees reached 29 nodes; redo split first on `remote_operation_ratio`.
+
+The full result is documented in
+`docs/resultado-vfdt-baseline-2pc-2000.md`; the raw log is
+`/tmp/alps-2pc-baseline-2000.log`.
 
 ## Immediate Goal
 
-Set up and validate the four-instance MariaDB environment using Docker Compose. This database environment will support XA smoke testing now and the later distributed `TPC-C-like` workload.
+Prove adaptive protocol selection, not only outcome-prediction accuracy. Build
+reproducible same-specification trials under classic 2PC, presumed abort, and
+presumed commit so each transaction context has paired outcomes and a defensible
+lowest-cost oracle protocol. Then execute the online policy's actual selections
+and compare them with fixed-protocol and non-learning baselines.
+
+The categorical multi-head VFDT trained exclusively on classic 2PC is the
+validated predictive baseline requested for this stage. Its counterfactual PA
+and PC recommendations are evidence that the policy reacts to changing
+conditions, but are not yet evidence of execution-cost savings.
+
+## Adaptive Protocol Selection Proof Plan
+
+For each logical transaction specification, replay all three protocol candidates
+from equivalent database state with the same participants, inputs, injected
+latency, abort decisions, phase, and random seed. Preserve completion status,
+latency, redo, messages, protocol-log writes, and correctness. Compute the oracle
+as the lowest-cost correct protocol, retaining ties and invalid trials explicitly.
+
+Evaluate the live adaptive selector against:
+
+1. always classic 2PC;
+2. always presumed abort;
+3. always presumed commit;
+4. random selection;
+5. a static threshold heuristic;
+6. the paired oracle upper bound.
+
+Use prequential evaluation, multiple seeds, identical transaction streams, and
+confidence intervals. The primary evidence is cumulative regret relative to the
+paired oracle, supported by mean and tail latency, redo, messages, correctness,
+protocol distribution per phase, and transactions required to adapt after each
+phase boundary. A successful claim requires the adaptive policy to beat the best
+fixed policy, not merely predict labels accurately.
+
+Live selection creates partial feedback because only the chosen protocol's
+outcome is observed. Preserve selection probabilities and use controlled
+exploration, periodic paired oracle trials, or another explicit contextual-bandit
+method so early choices do not permanently bias the learner.
+
+The four-instance MariaDB environment and warehouse-sharded BenchmarkSQL dataset
+are already set up and validated. They support the XA trials and distributed
+`TPC-C-like` workload required by this next stage.
 
 The repository now includes a pinned, containerized BenchmarkSQL setup for
 loading and validating one global warehouse shard on each MariaDB node. The

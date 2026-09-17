@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 
 public record TransactionTrialRecord(
@@ -60,6 +61,16 @@ public record TransactionTrialRecord(
     public boolean hasUnavailableRedoMetric() {
         return participants.values().stream()
                 .anyMatch(ParticipantTrialMetrics::hasUnavailableRedoMetric);
+    }
+
+    public OptionalLong totalRedoBytes() {
+        if (participants.values().stream()
+                .anyMatch(metrics -> metrics.redo().redoBytesWritten().isEmpty())) {
+            return OptionalLong.empty();
+        }
+        return OptionalLong.of(participants.values().stream()
+                .mapToLong(metrics -> metrics.redo().redoBytesWritten().orElseThrow())
+                .sum());
     }
 
     private static void requireNonNegative(Duration value, String name) {

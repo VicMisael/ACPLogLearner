@@ -17,3 +17,5 @@ contribuir para o ALPS ou para a dissertação.
 Adicione aqui um link para cada nova ideia:
 
 - [Predição online de resultados: VFDT categórico e regressão contínua](predicao-online-resultados.md)
+- [Resultado controlado do VFDT multi-head faseado](../resultado-multi-head-faseado.md)
+- [VFDT multi-head com baseline 2PC — 2.000 transações](../resultado-vfdt-baseline-2pc-2000.md)

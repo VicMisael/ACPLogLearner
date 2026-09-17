@@ -70,9 +70,21 @@ public final class MariaDbTpccTransactionRunner {
             SelectedProtocol protocol,
             Map<Integer, Boolean> commitVotes
     ) throws InterruptedException, SQLException {
+        return run(spec, protocol, commitVotes, 0);
+    }
+
+    public TransactionTrialRecord run(
+            TpccNewOrderSpec spec,
+            SelectedProtocol protocol,
+            Map<Integer, Boolean> commitVotes,
+            int injectedNetworkLatencyMs
+    ) throws InterruptedException, SQLException {
         Objects.requireNonNull(spec, "spec");
         Objects.requireNonNull(protocol, "protocol");
         Objects.requireNonNull(commitVotes, "commitVotes");
+        if (injectedNetworkLatencyMs < 0) {
+            throw new IllegalArgumentException("injectedNetworkLatencyMs must not be negative");
+        }
         MariaDbTpccNewOrderPlan plan = planner.plan(spec);
         validateVotes(plan, commitVotes);
 
@@ -87,6 +99,11 @@ public final class MariaDbTpccTransactionRunner {
         Set<Node> participantNodes = new LinkedHashSet<>();
 
         network.register(COORDINATOR_ID, coordinatorActor);
+        if (injectedNetworkLatencyMs > 0) {
+            network.setNodeLatency(
+                    COORDINATOR_ID, injectedNetworkLatencyMs, injectedNetworkLatencyMs
+            );
+        }
         for (MariaDbTpccNewOrderPlan.Branch branch : plan.branches()) {
             NodeId participantId = new NodeId(branch.participantId());
             LocalNode participantNode = new LocalNode(participantId);
@@ -113,6 +130,11 @@ public final class MariaDbTpccTransactionRunner {
             participantNodes.add(participantNode);
             participantLogs.put(participantId, participantLog);
             network.register(participantId, participantActor);
+            if (injectedNetworkLatencyMs > 0) {
+                network.setNodeLatency(
+                        participantId, injectedNetworkLatencyMs, injectedNetworkLatencyMs
+                );
+            }
         }
 
         ICoordinator coordinator = new AdaptiveCoordinatorDispatcher(

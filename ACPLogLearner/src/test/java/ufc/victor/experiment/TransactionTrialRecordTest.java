@@ -34,6 +34,7 @@ class TransactionTrialRecordTest {
         assertEquals(5L, trial.totalProtocolLogWrites());
         assertFalse(trial.resetDetected());
         assertFalse(trial.hasUnavailableRedoMetric());
+        assertEquals(20L, trial.totalRedoBytes().orElseThrow());
     }
 
     private static OptionalLong value(long value) {
