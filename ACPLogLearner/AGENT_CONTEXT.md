@@ -250,11 +250,11 @@ The full result is documented in
 
 ## Immediate Goal
 
-Prove adaptive protocol selection, not only outcome-prediction accuracy. Build
-reproducible same-specification trials under classic 2PC, presumed abort, and
-presumed commit so each transaction context has paired outcomes and a defensible
-lowest-cost oracle protocol. Then execute the online policy's actual selections
-and compare them with fixed-protocol and non-learning baselines.
+Repeat the paired adaptive-protocol experiment across the ten configured seeds,
+then evaluate confidence intervals and cost-weight sensitivity. The one-seed
+15-minute run already shows that the adaptive policy beats all three fixed
+protocols and random selection, but it does not yet beat the static heuristic or
+provide independent-seed statistical evidence.
 
 The categorical multi-head VFDT trained exclusively on classic 2PC is the
 validated predictive baseline requested for this stage. Its counterfactual PA
@@ -289,6 +289,45 @@ Live selection creates partial feedback because only the chosen protocol's
 outcome is observed. Preserve selection probabilities and use controlled
 exploration, periodic paired oracle trials, or another explicit contextual-bandit
 method so early choices do not permanently bias the learner.
+
+The minimum defensible paired experiment is now implemented in
+`MariaDbDefensibleExperimentMain` and exposed as
+`./gradlew runMariaDbDefensibleExperiment`. It snapshots every affected
+New-Order row, executes the three candidates in seeded random order, restores
+and verifies exact logical state after each candidate, and fails closed when
+`XA RECOVER` exposes a prepared branch. It maintains one independent VFDT
+outcome bundle per protocol; all receive the same protocol-neutral `T-1`
+features and each trains only on its matching paired outcome after selection.
+It compares adaptive, static heuristic,
+random, all three fixed protocols, and oracle policies over five phases and ten
+seeds by default. Outputs include transaction-level CSV, per-seed/per-phase
+summaries, seed-level 95% confidence intervals, paired adaptive-versus-baseline
+intervals, regret, p95 latency, invalid-trial counts, and adaptation delay.
+
+The implementation passed a one-seed, one-transaction-per-phase real MariaDB
+smoke run. That smoke validates the harness and state restoration only; it is
+not a thesis result. The full default matrix still needs to be executed and
+analyzed. See `docs/defensible-adaptive-experiment.md`.
+
+A larger calibration run completed on 2026-09-17 in `15m14s`. It used seed
+`101`, 100 warm-up blocks, 430 measured transactions in each of five phases,
+2,150 measured logical transactions, and 6,750 real XA executions. All paired
+trials were valid; there were no unresolved branches or restoration failures.
+The adaptive policy obtained mean cost `2.515`, mean regret `0.111`, oracle
+agreement `0.8433`, and p95 latency `221 ms`. Relative to adaptive cost, always
+2PC was 25.66% worse, always presumed abort 11.36% worse, always presumed commit
+9.07% worse, and random selection 15.59% worse. The static heuristic remained
+2.11% better than VFDT (`2.463` versus `2.515`) and achieved `0.9098` oracle
+agreement, so it is the strongest current non-oracle baseline.
+
+The adaptive choices changed coherently by regime: presumed commit was selected
+426/430 times in baseline and 429/430 during the latency spike; presumed abort
+was selected 366/430 times in the abort spike and 367/430 in the combined spike;
+recovery returned to presumed commit for 333/430 transactions. This is promising
+evidence of behavioral adaptation, not final statistical proof. With one seed,
+the reported confidence interval collapses to the point estimate and must not be
+used for inferential claims. The full result and interpretation are documented
+in `docs/resultado-experimento-adaptativo-15min.md`.
 
 The four-instance MariaDB environment and warehouse-sharded BenchmarkSQL dataset
 are already set up and validated. They support the XA trials and distributed

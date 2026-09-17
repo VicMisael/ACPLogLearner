@@ -64,3 +64,10 @@ tasks.register('runMariaDbAlps', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'ufc.victor.MariaDbAlpsMain'
 }
+
+tasks.register('runMariaDbDefensibleExperiment', JavaExec) {
+    group = 'application'
+    description = 'Runs paired multi-seed MariaDB protocol selection and regret experiments.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ufc.victor.MariaDbDefensibleExperimentMain'
+}
