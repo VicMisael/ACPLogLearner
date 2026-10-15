@@ -1,6 +1,46 @@
 # Saved Agent Context
 
-Date saved: 2026-09-17
+Date saved: 2026-10-14
+
+## Latest handoff: research and writing (2026-10-14)
+
+Read `docs/MAC_HANDOFF.md` first when resuming on macOS. It contains the
+current writing decisions, reference inventory, migration checks, and smoke-run
+commands. This section and that handoff supersede older plans below when they
+conflict; older sections contain historical stages, not all current limitations.
+
+- The user is writing a roughly 20-page dissertation proposal in Portuguese,
+  designed to become the foundation of the dissertation. The discussed 80–120
+  dissertation pages were a planning estimate, not a university requirement.
+- The user rejected the broad rewrite in `docs/artigo/alps-revisado.tex` and is
+  rewriting in their own voice. Preserve that file but do not treat its prose
+  as approved or overwrite it without a request. Prefer focused paragraph-level
+  feedback and LaTeX snippets. The newer introduction and related-work drafts
+  were developed in chat and are NOT automatically reflected in that file.
+- The user's original title expands ALPS as **Adaptive Log-based Protocol
+  Switching**. Do not silently replace it with another expansion. Other project
+  documents use a different working title; naming is not harmonized.
+- FLAC is the central related work. Other important comparisons: dynamic 2PC
+  (Yu, Wang, Pu, 2004), 1-2PC (Al-Houmaily, Chrysanthis, 2004), Presumed-Either,
+  Lampson–Lomet, EasyCommit, FC (ICDE 2024), ForeSight (arXiv:2508.17375), and
+  Transaction Triaging. Treat FLAC and FC as closely related works; do not claim
+  their contributions are independent without investigating their relationship.
+- Avoid claiming novelty merely from selection per transaction. Explain the
+  proposed combination of pre-decision features, historical/redo metrics,
+  incremental outcome/cost prediction, and a separate selection policy.
+- The local report for the single-seed paired run gives mean cost 2.515 for
+  VFDT and 2.463 for the heuristic: VFDT was about 2.1% more costly, although
+  better than all fixed protocols in that run. This is not multi-seed evidence.
+  The heuristic has fixed rules over a changing history, not a fixed protocol.
+- Possible explanations (NOT established causes): commit/abort phases favor
+  the heuristic's direct signal, VFDT has no explicit forgetting, and categorical
+  prediction scores approximate rather than equal the measured oracle cost.
+  Next analyses: per-phase regret, transition delay, feature ablation, multiple
+  seeds, and cost-weight sensitivity. Do not tune scenarios just to make ML win.
+- There are 19 reference PDFs under `docs/referencias/artigos`, with sources in
+  its README. ForeSight was read on the web but not downloaded into that folder.
+- The Mac has not been tested. Earlier Windows environment diagnostics must
+  not be treated as Mac status. No new experiments were executed in this handoff.
 
 ## Project Summary
 
