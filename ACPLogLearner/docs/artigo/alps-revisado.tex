@@ -1,0 +1,174 @@
+% Revisão do rascunho sbc-template.tex. Versão independente para revisão.
+% Os resultados abaixo são transcritos dos relatórios locais, não reexecutados.
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{lmodern}
+\usepackage{amsmath,booktabs,array}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+\title{ALPS: seleção adaptativa de protocolos de commit atômico com aprendizado online e métricas de execução}
+\author{Victor Misael B. F. Carneiro\\Universidade Federal do Ceará}
+\date{}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This work investigates adaptive selection of atomic commit protocols for distributed transactions. We hypothesize that transaction characteristics and recent participant conditions provide useful signals for selecting a lower-cost protocol. ALPS combines information available before protocol selection, historical execution metrics, and database redo activity metrics. Online models predict completion outcomes and latency and redo cost categories; an explicit policy uses these predictions to select classic two-phase commit, presumed abort, or presumed commit. The prototype executes XA transactions across four MariaDB instances using a TPC-C-like New-Order workload. A paired experimental harness executes equivalent transaction specifications under all three protocols to evaluate selection cost and regret. A preliminary single-seed experiment reported lower adaptive cost than all fixed protocols, but higher cost than a static heuristic. These findings motivate evaluation across independent seeds, cost-weight sensitivity analysis, and comparison with drift-aware learners.
+\end{abstract}
+
+\begin{center}\textbf{Resumo}\end{center}
+Este trabalho investiga a seleção adaptativa de protocolos de commit atômico para transações distribuídas. Parte-se da hipótese de que características da transação e condições recentes dos participantes fornecem sinais úteis para selecionar um protocolo de menor custo. O ALPS combina informações disponíveis antes da seleção, métricas históricas de execução e métricas de atividade de redo do banco de dados. Modelos online estimam o resultado de conclusão e categorias de custo de latência e redo; uma política explícita utiliza essas previsões para escolher entre commit em duas fases clássico, presumed abort e presumed commit. O protótipo executa transações XA em quatro instâncias MariaDB com uma carga New-Order inspirada no TPC-C. Um ambiente experimental pareado executa especificações equivalentes nos três protocolos para avaliar custo de seleção e arrependimento. Um experimento preliminar com uma única semente apresentou custo adaptativo inferior ao de todos os protocolos fixos, mas superior ao de uma heurística estática. Os achados motivam avaliação com sementes independentes, análise de sensibilidade dos pesos de custo e comparação com modelos que tratam mudanças de conceito.
+
+\section{Introdução}
+Transações distribuídas exigem uma decisão de término compatível entre os nós participantes: todas as alterações devem ser confirmadas ou desfeitas. Protocolos de commit atômico coordenam essa decisão, enquanto mecanismos locais de controle de concorrência e recuperação atendem a outras propriedades transacionais. A atomicidade do commit, por si só, não substitui o controle de isolamento ou uma política completa de tolerância a falhas~\cite{ozsu2019,gray2006}.
+
+O protocolo de commit em duas fases (2PC) organiza a execução em preparação e decisão global. Suas variantes presumed abort (PA) e presumed commit (PC) alteram regras de registro, reconhecimento e recuperação para reduzir custos em determinadas situações~\cite{mohan1986,lampson1993}. Essas diferenças motivam a investigação de uma escolha dependente da transação e do ambiente. A frequência de abortos é um sinal relevante, mas a vantagem de uma variante também depende dos registros forçados, mensagens e mecanismos de recuperação efetivamente implementados.
+
+Este trabalho propõe o ALPS, um mecanismo que separa coleta de informações, previsão online, política de seleção e execução dos protocolos. O seletor atua antes da primeira mensagem de preparação e escolhe um protocolo para toda a execução daquela transação. O modelo não altera votos nem decisões globais: a máquina de estados do protocolo escolhido continua responsável pela coordenação.
+
+A pergunta central é: \textit{previsões online baseadas na estrutura da transação e no histórico de execução dos participantes reduzem o custo de commit em comparação com políticas fixas e uma heurística baseada no histórico de conclusões?} A hipótese será testada em execuções XA reais e controladas, com análise separada da qualidade preditiva, do custo da política e da correção observada.
+
+As contribuições investigadas são: (i) uma arquitetura modular de seleção por transação; (ii) modelos online de conclusão, latência e redo; e (iii) um método de avaliação pareada que compara a política com protocolos fixos e um oráculo experimental. O artigo apresenta o protótipo existente e resultados preliminares, sem antecipar uma conclusão de superioridade geral.
+
+\section{Fundamentação e trabalhos relacionados}
+\subsection{Commit atômico e otimizações}
+Mohan et al.~\cite{mohan1986} descrevem presumed abort e presumed commit no sistema R*, mostrando como otimizações reduzem comunicação e registros de log. Lampson e Lomet~\cite{lampson1993} apresentam uma otimização de presumed commit com requisitos próprios de recuperação. O ALPS considera os custos das variantes implementadas; uma correspondência formal entre essas implementações e as variantes da literatura deve integrar a validação dos protocolos.
+
+Presumed-Either explora o envio combinado de informações de log para reunir vantagens de PA e PC~\cite{attaluri2002}. Esse trabalho mostra que a exploração de caminhos favoráveis de commit e abort já possui antecedentes. Portanto, a contribuição do ALPS deve ser examinada no mecanismo de previsão, na política e na avaliação, em vez de ser atribuída apenas à existência de uma escolha entre variantes.
+
+Skeen~\cite{skeen1981} fundamenta condições de não bloqueio. EasyCommit~\cite{gupta2018} propõe um protocolo de duas fases com transmissão da decisão antes do commit local e redundância de mensagens. Tais garantias dependem das hipóteses de falha e comunicação de cada protocolo. A seleção entre 2PC, PA e PC não elimina automaticamente o bloqueio diante de falhas.
+
+\subsection{Adaptação e contexto transacional}
+FLAC~\cite{pan2023} adapta a execução a níveis de robustez associados a falhas de participantes e conexões, com parâmetros ajustados por aprendizado por reforço. É um antecedente importante para a adaptação de protocolos de commit. O ALPS investiga outro mecanismo: previsões de conclusão e custo orientam uma política explícita entre variantes conhecidas. Essa diferença constitui uma hipótese de contribuição a ser aprofundada na revisão bibliográfica.
+
+Transaction Triaging~\cite{jepsen2021} manipula fluxos de requisições e respostas em redes programáveis para melhorar o processamento transacional. Sua relação com o ALPS está no uso do contexto das transações para orientar decisões antecipadas, embora o mecanismo e a camada de atuação sejam distintos.
+
+A revisão ainda deve incorporar uma comparação detalhada com \textit{A Dynamic Two-Phase Commit Protocol for Self-Adapting Services}, \textit{1-2PC: The One-Two Phase Atomic Commit Protocol} e \textit{FC: Adaptive Atomic Commit via Failure Detection}, disponíveis na coleção local. Esses trabalhos tratam de escolhas dinâmicas ou adaptação e precisam ser analisados antes de formular uma afirmação de novidade.
+
+\subsection{Aprendizado online}
+VFDT utiliza limites de Hoeffding para construir árvores de decisão incrementalmente sobre fluxos de dados~\cite{domingos2000}. A implementação atual utiliza a Hoeffding Tree da biblioteca MOA~\cite{bifet2010}. Aprender incrementalmente não implica esquecer padrões antigos ou detectar mudanças de conceito. A comparação com modelos adaptativos é relevante para mudanças de carga, especialmente na recuperação após fases com abortos frequentes.
+
+\section{Proposta e arquitetura}
+\subsection{Informações disponíveis antes da seleção}
+Para a transação $t$, define-se um vetor $x_t$ a partir da requisição e do histórico de execuções concluídas antes de $t$. O resultado, a latência e o redo da própria transação são feedback posterior, nunca entradas para sua previsão. Identificadores da fase experimental e probabilidades utilizadas para injetar abortos também ficam fora do vetor.
+
+O perfil genérico atual possui 37 atributos, organizados na Tabela~\ref{tab:features}. Informações estruturais são estimativas extraídas da especificação New-Order. Os históricos resumem uma janela limitada de execuções concluídas, tanto globalmente quanto para os participantes selecionados.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Grupos de atributos do perfil genérico atual.}
+\label{tab:features}
+\begin{tabular}{p{3cm}cp{8cm}}
+\toprule Grupo & Quantidade & Exemplos e conteúdo \\
+\midrule
+Estrutura & 10 & Número de participantes; execução distribuída; contagens de leitura, escrita, inserção, atualização e exclusão; linhas estimadas; proporção remota; somente leitura. \\
+Histórico global & 10 & Amostras; taxa de commit; latência; bytes de redo; avanço de LSN; escritas e esperas de redo; registros lógicos; disponibilidade de métricas; resets. \\
+Histórico dos participantes & 17 & Cobertura histórica e agregações de média, mínimo ou máximo das métricas dos participantes selecionados. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As métricas de redo são obtidas por contadores do MariaDB/InnoDB; o protótipo não pressupõe a leitura direta dos arquivos físicos de log. Registros lógicos das máquinas de estados, bytes de redo e operações físicas de armazenamento são grandezas distintas. A coleta deve explicitar disponibilidade, resets dos contadores e interferência de atividade de fundo. Latência histórica total também não equivale a uma medição isolada da latência de rede.
+
+Perfis opcionais acrescentam identidade dos nós e atributos específicos da carga. O perfil genérico permite investigar sinais menos dependentes de identificadores fixos. A utilidade de cada grupo deve ser avaliada por ablação.
+
+\subsection{Previsão e política}
+Cada preditor possui três árvores independentes com o mesmo vetor de entrada: conclusão ($\{\mathrm{COMMIT},\mathrm{ABORT},\mathrm{TIMEOUT}\}$), latência e redo ($\{\mathrm{LOW},\mathrm{MEDIUM},\mathrm{HIGH}\}$). Cada árvore retorna a classe prevista, uma distribuição normalizada de votos e a probabilidade associada à classe escolhida. Essa probabilidade é uma confiança operacional do modelo, não uma garantia de calibração estatística.
+
+As classes de latência e redo dependem de limiares explícitos. O experimento defensável utiliza limiares fixos predeclarados. O runner de baseline admite limiares adaptativos derivados do histórico, que podem alterar o significado de ``baixo'' e ``alto'' ao longo do tempo. Esses dois modos devem ser reportados separadamente, preservando as métricas brutas.
+
+Há dois modos experimentais implementados. No baseline preditivo, um único conjunto de árvores aprende exclusivamente com 2PC clássico e produz recomendações contrafactuais de protocolo. No experimento pareado, existe um conjunto independente de três árvores para cada candidato: nove árvores no total. Todos recebem o mesmo $x_t$, e cada conjunto aprende com o feedback de seu protocolo correspondente. A política seleciona o candidato de menor escore previsto:
+\begin{equation}
+\widehat{p}_t=\arg\min_{p\in\{2PC,PA,PC\}} S(p,\widehat{y}_{t,p}).
+\end{equation}
+
+O escore atual combina custos analíticos de commit e abort com custos ordinais previstos para latência e redo, além de uma penalidade de timeout. Ele deve ser distinguido do custo medido utilizado pelo oráculo. A qualidade da seleção depende tanto do modelo quanto dessa aproximação de custo.
+
+No baseline, latência e redo previstos são iguais para todos os candidatos e seus termos não diferenciam a escolha; a comparação depende essencialmente da distribuição de conclusão. No modo pareado, previsões específicas por candidato permitem que esses termos participem da comparação. Essa distinção evita atribuir ao baseline benefícios de seleção que ele não mede.
+
+\subsection{Ciclo de execução}
+\begin{enumerate}
+\item Construir $x_t$ com a especificação e o histórico até $t-1$.
+\item Prever conclusão e categorias de custo, e registrar a escolha da política.
+\item Executar as tentativas previstas pelo modo experimental.
+\item Medir resultados, avaliar a previsão e calcular custo e arrependimento.
+\item Treinar os modelos com os feedbacks válidos e atualizar o histórico.
+\end{enumerate}
+Métricas indisponíveis não são convertidas em custo zero: a atualização de uma árvore de custo é omitida quando seu feedback é inválido. O modelo de conclusão usa a observação correspondente à tentativa.
+
+\section{Protótipo e método experimental}
+O protótipo utiliza Java 21, MOA e quatro instâncias MariaDB 11.4. As transações utilizam recursos XA, com um warehouse global atribuído a cada nó. A carga executa especificações New-Order inspiradas no TPC-C, incluindo transações locais e distribuídas. O experimento não constitui uma execução auditada do TPC-C nem autoriza uma alegação de conformidade com esse benchmark.
+
+O simulador original continua útil para testes controlados das máquinas de estados. A integração MariaDB/XA já está implementada e fornece a base para observar execução real e atividade de redo. Recuperação completa após reinício de processos e máquinas permanece fora do escopo validado.
+
+\subsection{Tentativas pareadas e políticas de comparação}
+Para cada especificação imutável, o ambiente captura o estado lógico afetado e executa os três protocolos em ordem pseudoaleatória reproduzível. Após cada candidato, restaura as alterações e verifica a igualdade do estado. A presença de branches preparados não resolvidos em \texttt{XA RECOVER} interrompe o experimento. A restauração ocorre fora do intervalo medido do candidato.
+
+Esse procedimento fornece feedback para todos os candidatos. Trata-se de uma avaliação controlada com informação completa; uma implantação que execute somente o protocolo selecionado precisará de exploração ou de outra solução para feedback parcial. O método restaura o estado lógico, mas não iguala perfeitamente caches, checkpointing e atividade física de fundo.
+
+As políticas comparadas são seleção adaptativa, 2PC fixo, PA fixo, PC fixo, seleção aleatória, heurística de limiares fixos sobre a taxa histórica de commit e oráculo experimental. A heurística possui regra fixa, mas reage ao histórico; ``estática'' não significa escolher sempre o mesmo protocolo.
+
+O oráculo seleciona o candidato válido de menor custo observado para aquela especificação. O arrependimento da política é:
+\begin{equation}
+R_t=C(\widehat{p}_t,t)-\min_{p\ \mathrm{válido}} C(p,t).
+\end{equation}
+O custo combina latência, bytes de redo, mensagens e registros lógicos de protocolo, com escalas e pesos predefinidos e penalidades explícitas. Métricas brutas devem ser apresentadas junto ao escore. Um aborto esperado pelos votos não equivale a uma violação de atomicidade.
+
+\subsection{Cenários e métricas}
+A execução faseada inclui condições iniciais, pico de latência, pico de abortos, pico combinado e recuperação. Os cenários controlados permitem medir reação e retorno ao regime anterior, mas não demonstram, isoladamente, generalização para falhas e cargas de produção.
+
+A avaliação deve reportar custo e arrependimento por fase, latência média e percentis, redo, mensagens, registros lógicos e consistência das decisões. Para os modelos, devem ser reportados acurácia, macro-F1, acurácia balanceada, tamanho das árvores e tempos de inferência e treinamento. O tempo até uma sequência de concordâncias com o oráculo é um indicador operacional da política; não é uma medida direta de detecção de drift.
+
+A matriz planejada utiliza dez sementes independentes, 100 transações de aquecimento e cinco fases de 1.000 transações medidas por semente. São 51.000 especificações e 153.000 tentativas de protocolo. As diferenças entre políticas devem ser analisadas de forma pareada por semente, evitando tratar tentativas correlacionadas como observações independentes. Uma análise de sensibilidade investigará pesos e escalas de custo predeclarados.
+
+\section{Resultados preliminares e limitações}
+Os números desta seção são transcritos do relatório local de execução de 17 de setembro de 2026. Os artefatos brutos e a revisão de código daquela execução precisam acompanhar uma submissão; a presente revisão textual não reexecutou o experimento.
+
+O ensaio pareado utilizou a semente 101, 100 transações de aquecimento e 430 transações medidas por fase: 2.150 especificações medidas e 6.750 tentativas XA incluindo aquecimento. A janela histórica foi de 30 transações, com pico de latência injetada de 50 ms e piso configurado de aborto de 0,70 nas fases afetadas. O custo padrão combinou latência em milissegundos dividida por 100, bytes de redo por 10.000, mensagens por 10 e registros lógicos por 10, além das penalidades.
+
+\begin{table}[htbp]
+\centering
+\caption{Resultados preliminares reportados para uma única semente. Custos adimensionais; valores arredondados.}
+\label{tab:results}
+\begin{tabular}{lrr}
+\toprule Política & Custo médio & Arrependimento médio \\
+\midrule
+Oráculo & 2,404 & 0,000 \\
+Heurística & 2,463 & 0,058 \\
+VFDT adaptativo & 2,515 & 0,111 \\
+PC fixo & 2,766 & 0,361 \\
+PA fixo & 2,837 & 0,433 \\
+Aleatória & 2,979 & 0,575 \\
+2PC fixo & 3,383 & 0,979 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O relatório registra redução de custo de aproximadamente 25,66\% em relação a 2PC fixo, 11,36\% a PA fixo e 9,07\% a PC fixo. Entretanto, o custo adaptativo foi aproximadamente 2,11\% superior ao da heurística. As escolhas passaram de PC nas condições iniciais para PA nos picos de aborto, retornando majoritariamente a PC na recuperação. O relatório não registrou tentativas inválidas, branches XA pendentes ou falhas de restauração.
+
+Esses resultados sustentam a continuidade da investigação, mas não estabelecem superioridade estatística: há somente uma semente, e a heurística permanece mais competitiva nesse ensaio. Ausência de erros observados também não substitui uma demonstração de correção ou testes sistemáticos de recuperação. Ganhos no custo agregado dependem dos pesos e precisam ser confrontados com as métricas individuais.
+
+O VFDT atual não possui esquecimento explícito ou detector de mudanças. A adaptação observada pode decorrer da aprendizagem incremental e de atributos históricos que acompanham o ambiente. Comparações com modelos que detectam mudanças e com baselines simples são necessárias para atribuir os ganhos ao mecanismo apropriado.
+
+\section{Próximos passos e conclusão}
+Os próximos passos incluem completar a revisão sobre protocolos dinâmicos, verificar a correspondência das máquinas de estados com os protocolos citados, executar a matriz com sementes independentes e avaliar sensibilidade de custo. Também serão investigadas ablações dos atributos e comparação entre VFDT e alternativas com tratamento explícito de mudanças de conceito.
+
+O ALPS oferece uma infraestrutura para estudar seleção por transação com previsões online e custos observáveis. O protótipo já integra execução XA real e avaliação pareada. A evidência preliminar favorece a comparação com protocolos fixos, mas a vantagem sobre uma heurística simples permanece uma questão em aberto. A contribuição final dependerá da avaliação reproduzível dos benefícios, do overhead e dos limites do mecanismo proposto.
+
+\begin{thebibliography}{99}
+\bibitem{ozsu2019} Özsu, M. T.; Valduriez, P. \textit{Principles of Distributed Database Systems}. 4. ed. Springer, 2019.
+\bibitem{mohan1986} Mohan, C.; Lindsay, B.; Obermarck, R. Transaction Management in the R* Distributed Database Management System. \textit{ACM Transactions on Database Systems}, 1986.
+\bibitem{lampson1993} Lampson, B. W.; Lomet, D. B. A New Presumed Commit Optimization for Two Phase Commit. \textit{VLDB}, p. 630--640, 1993.
+\bibitem{attaluri2002} Attaluri, G. K.; Salem, K. The Presumed-Either Two-Phase Commit Protocol. \textit{IEEE TKDE}, v. 14, n. 5, p. 1190--1196, 2002. DOI: \href{https://doi.org/10.1109/TKDE.2002.1033784}{10.1109/TKDE.2002.1033784}.
+\bibitem{skeen1981} Skeen, D. Nonblocking Commit Protocols. \textit{SIGMOD}, p. 133--142, 1981. DOI: \href{https://doi.org/10.1145/582318.582339}{10.1145/582318.582339}.
+\bibitem{gupta2018} Gupta, S.; Sadoghi, M. EasyCommit: A Non-blocking Two-phase Commit Protocol. \textit{EDBT}, p. 157--168, 2018. DOI: \href{https://doi.org/10.5441/002/edbt.2018.15}{10.5441/002/edbt.2018.15}.
+\bibitem{pan2023} Pan, H. et al. FLAC: A Robust Failure-Aware Atomic Commit Protocol for Distributed Transactions. \textit{arXiv:2302.04500}, 2023. \url{https://arxiv.org/abs/2302.04500}.
+\bibitem{jepsen2021} Jepsen, T.; Lerner, A.; Pedone, F.; Soulé, R.; Cudré-Mauroux, P. In-Network Support for Transaction Triaging. \textit{PVLDB}, v. 14, n. 9, p. 1626--1639, 2021.
+\bibitem{domingos2000} Domingos, P.; Hulten, G. Mining High-Speed Data Streams. \textit{KDD}, p. 71--80, 2000. DOI: \href{https://doi.org/10.1145/347090.347107}{10.1145/347090.347107}.
+\bibitem{bifet2010} Bifet, A.; Holmes, G.; Kirkby, R.; Pfahringer, B. MOA: Massive Online Analysis. \textit{JMLR}, v. 11, p. 1601--1604, 2010.
+\bibitem{gray2006} Gray, J.; Lamport, L. Consensus on Transaction Commit. \textit{ACM Transactions on Database Systems}, v. 31, n. 1, p. 133--160, 2006.
+\end{thebibliography}
+\end{document}
