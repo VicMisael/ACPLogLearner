@@ -80,13 +80,13 @@ public final class MariaDbDefensibleExperimentMain {
                 new MariaDbWalMetricsCollector(MariaDbTpccClusterMain.redoConfigs(databaseConfigs)),
                 config.timeoutMs()
         );
-        MariaDbNewOrderStateController stateController =
-                new MariaDbNewOrderStateController(databaseConfigs);
         ProtocolCostFunction costFunction = new ProtocolCostFunction(config.costWeights());
 
         List<SeedResult> seedResults = new ArrayList<>();
         Path transactionPath = config.outputDirectory().resolve("transactions.csv");
-        try (TransactionWriter writer = new TransactionWriter(transactionPath)) {
+        try (MariaDbNewOrderStateController stateController =
+                     new MariaDbNewOrderStateController(databaseConfigs);
+             TransactionWriter writer = new TransactionWriter(transactionPath)) {
             for (long seed : config.seeds()) {
                 SeedResult result = runSeed(
                         config, seed, databaseRunner, stateController, costFunction, writer

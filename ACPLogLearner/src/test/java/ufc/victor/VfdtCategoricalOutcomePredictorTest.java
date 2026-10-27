@@ -9,7 +9,6 @@ import ufc.victor.experiment.CostCategory;
 import ufc.victor.experiment.HistoricalMetrics;
 import ufc.victor.experiment.OutcomeThresholds;
 import ufc.victor.experiment.TransactionContext;
-import ufc.victor.experiment.TransactionOutcomeClass;
 import ufc.victor.experiment.TransactionShape;
 import ufc.victor.protocol.coordinator.node.NodeId;
 
@@ -22,11 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class VFDTTransactionOutcomePredictorTest {
+class VfdtCategoricalOutcomePredictorTest {
 
     @Test
     void acceptsConfiguredWorkloadFeaturesWithoutKnowingTheirDomain() {
-        VFDTTransactionOutcomePredictor predictor = new VFDTTransactionOutcomePredictor(
+        VfdtCategoricalOutcomePredictor predictor = new VfdtCategoricalOutcomePredictor(
                 List.of("node-a", "node-b"),
                 List.of("CUSTOM_TRANSACTION"),
                 List.of("custom_cost"),
@@ -48,31 +47,39 @@ class VFDTTransactionOutcomePredictorTest {
                 )
         );
 
-        predictor.train(features, TransactionOutcomeClass.UNCERTAIN);
+        predictor.train(features, new CategoricalOutcomeObservation(
+                CompletionCategory.COMMIT,
+                Optional.of(CostCategory.LOW),
+                Optional.of(CostCategory.HIGH),
+                new OutcomeThresholds(10, 20, 100, 200, 0, 0)
+        ));
 
-        assertEquals(TransactionOutcomeClass.UNCERTAIN, predictor.predict(features));
-        assertTrue(predictor.getFeatureNames().contains("has_node-a"));
-        assertTrue(predictor.getFeatureNames().contains("workload_custom_cost"));
+        var prediction = predictor.predict(features);
+        assertEquals(CompletionCategory.COMMIT, prediction.completion().predictedClass());
+        assertEquals(CostCategory.LOW, prediction.latency().predictedClass());
+        assertEquals(CostCategory.HIGH, prediction.redo().predictedClass());
+        assertTrue(predictor.featureNames().contains("has_node-a"));
+        assertTrue(predictor.featureNames().contains("workload_custom_cost"));
     }
 
     @Test
     void genericProfileExcludesTopologyAndWorkloadIdentity() {
-        VFDTTransactionOutcomePredictor predictor = new VFDTTransactionOutcomePredictor(
+        VfdtCategoricalOutcomePredictor predictor = new VfdtCategoricalOutcomePredictor(
                 List.of("node-a"),
                 List.of("CUSTOM_TRANSACTION"),
                 List.of("custom_cost"),
                 AlpsFeatureProfile.GENERIC
         );
 
-        assertTrue(predictor.getFeatureNames().contains("remote_operation_ratio"));
-        assertTrue(predictor.getFeatureNames().contains("participants_max_latency_ms"));
-        assertFalse(predictor.getFeatureNames().contains("has_node-a"));
-        assertFalse(predictor.getFeatureNames().contains("type_CUSTOM_TRANSACTION"));
-        assertFalse(predictor.getFeatureNames().contains("workload_custom_cost"));
+        assertTrue(predictor.featureNames().contains("remote_operation_ratio"));
+        assertTrue(predictor.featureNames().contains("participants_max_latency_ms"));
+        assertFalse(predictor.featureNames().contains("has_node-a"));
+        assertFalse(predictor.featureNames().contains("type_CUSTOM_TRANSACTION"));
+        assertFalse(predictor.featureNames().contains("workload_custom_cost"));
     }
 
     @Test
-    void multiHeadPredictorUsesProtocolIndependentBaselineFeatures() {
+    void multiHeadPredictorLearnsSeparateTargetsWithoutProtocolIdentity() {
         VfdtCategoricalOutcomePredictor predictor = new VfdtCategoricalOutcomePredictor(
                 List.of("node-a", "node-b"),
                 List.of("CUSTOM_TRANSACTION"),

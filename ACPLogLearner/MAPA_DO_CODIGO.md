@@ -47,8 +47,7 @@ a separação mais importante do desenho.
 
 ## 3. Fluxo principal de uma transação real
 
-O caminho mais representativo começa em `MariaDbAlpsMain` ou
-`MariaDbDefensibleExperimentMain`:
+O experimento atual começa em `MariaDbDefensibleExperimentMain`:
 
 ```mermaid
 sequenceDiagram
@@ -89,21 +88,17 @@ diante.
 | Entrada | Tarefa Gradle | Papel |
 |---|---|---|
 | `ufc.victor.Main` | execução direta | Demonstração antiga, totalmente simulada, das máquinas de estados. |
-| `experiment.ExperimentRunner` | `runExperiment` | Experimento online simulado/legado com cenários e VFDT de um único rótulo. |
 | `ufc.victor.MariaDbMain` | `runMariaDbDemo` | Demonstra 2PC e XA em uma instância MariaDB usando uma tabela journal. |
 | `ufc.victor.MariaDbTpccClusterMain` | `runMariaDbTpccCluster` | Smoke test de New-Order distribuído no cluster de quatro shards. |
-| `ufc.victor.MariaDbAlpsMain` | `runMariaDbAlps` | Baseline prequential multi-head: recomenda entre três protocolos, mas executa e aprende somente com 2PC clássico. |
 | `ufc.victor.MariaDbDefensibleExperimentMain` | `runMariaDbDefensibleExperiment` | Experimento principal: trials pareados dos três protocolos, restauração do estado, oráculo, regret, múltiplas seeds e CSVs. |
 
 Comandos básicos:
 
 ```bash
 ./gradlew test
-./gradlew runExperiment
 docker compose up -d
 ./scripts/benchmarksql.sh load-all
 ./gradlew runMariaDbTpccCluster
-./gradlew runMariaDbAlps
 ./gradlew runMariaDbDefensibleExperiment
 ```
 
@@ -259,17 +254,13 @@ indisponibilidade e resets em vez de convertê-los em zero.
 - `OnlineExperimentSchedule`: produz fases estável, spike de latência, spike de
   abort, combinação e recuperação para estudar concept drift.
 
-#### Caminho simulado/legado
+#### Infraestrutura de simulação para testes de protocolos
 
 - `Scenario`, `NodeProfile`, `NodeCatalog` e `TransactionPlan`: descrevem uma
   simulação.
 - `DistributedSimulation`: instancia atores, recursos falsos e uma variante do
   protocolo.
 - `LogDrivenExperimentBuilder`: deriva `TxMetrics` a partir dos logs simulados.
-- `ExperimentRunner`: faz avaliação prequential com o classificador legado.
-- `TransactionOutcomeLabeler`, `TransactionOutcomeClass` e
-  `VfdtProtocolSwitchingPolicy`: pipeline anterior, com um único rótulo de
-  probabilidade de commit/abort.
 
 ### `ufc.victor` — modelos e aplicações
 
@@ -279,26 +270,21 @@ indisponibilidade e resets em vez de convertê-los em zero.
 - `VfdtCategoricalOutcomePredictor`: agrega três modelos independentes:
   completion, classe de latência e classe de redo. Um head sem métrica válida
   não é treinado.
-- `VFDTTransactionOutcomePredictor`: wrapper do classificador legado de um
-  único rótulo.
-- `LogFeatures`: representação antiga das features de simulação.
 - As classes `*Main` são os pontos de composição descritos na seção 4.
 
-## 6. Diferença entre os dois experimentos ALPS reais
+## 6. Experimento ALPS atual
 
-| Aspecto | `MariaDbAlpsMain` | `MariaDbDefensibleExperimentMain` |
-|---|---|---|
-| Objetivo | Baseline online e inspeção dos três heads | Avaliação comparativa defensável |
-| Modelos | Um predictor protocol-independent | Um predictor por protocolo |
-| Execução | Sempre `TWO_PC` | Os três protocolos para a mesma spec |
-| Recomendação | Contrafactual | Comparada com o oráculo real |
-| Estado do banco | Avança normalmente | Restaurado/verificado entre trials |
-| Thresholds | Adaptativos por janela | Fixos pela configuração do experimento |
-| Saída | Console | CSV de transações, seeds, agregados, classificadores e comparações |
+`runMariaDbDefensibleExperiment` é o único experimento ALPS mantido.
+Ele usa três preditores, um por protocolo, cada um com árvores de conclusão,
+latência e redo, totalizando nove árvores. Todos recebem o mesmo vetor de
+características disponível antes da execução. A política compara os escores
+produzidos pelas previsões de cada candidato.
 
-Essa diferença impede uma leitura equivocada importante: ver
-`recommended=TWO_PC_PRESUMED_ABORT` no baseline não significa que PrA foi
-executado naquela transação.
+A avaliação executa os três protocolos sobre a mesma especificação, restaura
+os dados entre as tentativas e calcula o oráculo e o regret a partir dos custos
+observados. Cada preditor aprende com o resultado de seu protocolo. O histórico
+adaptativo recebe apenas o resultado do candidato selecionado. Os limiares das
+classes são fixos na configuração, e as saídas são exportadas em CSV.
 
 ## 7. Dados que atravessam o sistema
 
@@ -343,7 +329,7 @@ warehouse 4 -> mariadb-4 -> P4 -> localhost:33064
 
 ## 9. Testes: onde procurar exemplos pequenos
 
-- `VFDTTransactionOutcomePredictorTest`: aprendizado VFDT legado.
+- `VfdtCategoricalOutcomePredictorTest`: predição dos três alvos e perfis de atributos.
 - `experiment/DistributedSimulationTest`: protocolo no runtime simulado.
 - `experiment/RollingMetricsRegistryTest`: fronteira temporal e agregações.
 - `experiment/CategoricalOutcomeLabelerTest`: formação dos três rótulos.
@@ -368,9 +354,8 @@ continua dependendo dos quatro bancos e da carga BenchmarkSQL.
 5. `db/mariadb/MariaDbTpccTransactionRunner.java`.
 6. `experiment/TransactionTrialRecord.java` e `RollingMetricsRegistry.java`.
 7. `VfdtCategoricalModel.java` e `VfdtCategoricalOutcomePredictor.java`.
-8. `MariaDbAlpsMain.java` para o ciclo prequential simples.
-9. `experiment/PairedProtocolTrialRunner.java`.
-10. `MariaDbDefensibleExperimentMain.java` para a avaliação completa.
+8. `experiment/PairedProtocolTrialRunner.java`.
+9. `MariaDbDefensibleExperimentMain.java` para a avaliação completa.
 
 ## 11. Onde alterar cada comportamento
 
@@ -387,7 +372,6 @@ continua dependendo dos quatro bancos e da carga BenchmarkSQL.
 | função de seleção | `CategoricalProtocolSelectionPolicy` |
 | custo do oráculo/regret | `ProtocolCostFunction` e `PairedProtocolTrial` |
 | fases de concept drift | `OnlineExperimentSchedule` |
-| protocolo realmente executado no baseline | `MariaDbAlpsMain` (`executedProtocol`) |
 | desenho do experimento final/CSVs | `MariaDbDefensibleExperimentMain` |
 
 ## 12. Documentos de contexto

@@ -37,13 +37,6 @@ tasks.withType(JavaExec).configureEach {
     }
 }
 
-tasks.register('runExperiment', JavaExec) {
-    group = 'application'
-    description = 'Runs the adaptive atomic commit experiment harness.'
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'ufc.victor.experiment.ExperimentRunner'
-}
-
 tasks.register('runMariaDbDemo', JavaExec) {
     group = 'application'
     description = 'Runs the MariaDB XA-backed 2PC demo.'
@@ -56,13 +49,6 @@ tasks.register('runMariaDbTpccCluster', JavaExec) {
     description = 'Runs distributed XA New-Order transactions on the four-node MariaDB cluster.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'ufc.victor.MariaDbTpccClusterMain'
-}
-
-tasks.register('runMariaDbAlps', JavaExec) {
-    group = 'application'
-    description = 'Runs the prequential ALPS experiment with real MariaDB XA transactions.'
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'ufc.victor.MariaDbAlpsMain'
 }
 
 tasks.register('runMariaDbDefensibleExperiment', JavaExec) {

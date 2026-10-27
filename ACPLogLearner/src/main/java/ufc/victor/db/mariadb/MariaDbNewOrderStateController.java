@@ -1,10 +1,11 @@
 package ufc.victor.db.mariadb;
 
+import org.mariadb.jdbc.Configuration;
+import org.mariadb.jdbc.MariaDbPoolDataSource;
 import ufc.victor.experiment.TrialStateController;
 
 import java.math.BigDecimal;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -14,18 +15,43 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 /** Restores every row changed by a controlled New-Order after a protocol trial. */
 public final class MariaDbNewOrderStateController
-        implements TrialStateController<TpccNewOrderSpec, MariaDbNewOrderStateController.Snapshot> {
+        implements TrialStateController<TpccNewOrderSpec, MariaDbNewOrderStateController.Snapshot>,
+        AutoCloseable {
 
-    private final Map<Integer, MariaDbXaConfig> configs;
+    private final Map<Integer, MariaDbPoolDataSource> pools = new LinkedHashMap<>();
+    private boolean closed;
 
-    public MariaDbNewOrderStateController(Map<Integer, MariaDbXaConfig> configs) {
+    public MariaDbNewOrderStateController(Map<Integer, MariaDbXaConfig> configs) throws SQLException {
         if (configs == null || configs.isEmpty()) {
             throw new IllegalArgumentException("configs must not be empty");
         }
-        this.configs = Map.copyOf(new LinkedHashMap<>(configs));
+        Map<Integer, MariaDbXaConfig> validated = Map.copyOf(configs);
+        // The driver has a global pool registry; each controller must own its pools.
+        String poolPrefix = "new-order-state-" + UUID.randomUUID();
+        try {
+            for (Map.Entry<Integer, MariaDbXaConfig> entry : validated.entrySet()) {
+                MariaDbXaConfig config = entry.getValue();
+                // initialUrl() masks passwords, so supply credentials separately below.
+                Configuration settings = Configuration.parse(config.jdbcUrl()).toBuilder()
+                        .user(null).password(null)
+                        .minPoolSize(1).maxPoolSize(2)
+                        .autocommit(true).useResetConnection(true)
+                        .poolName(poolPrefix + "-" + entry.getKey())
+                        .build();
+                MariaDbPoolDataSource pool = new MariaDbPoolDataSource();
+                pool.setUser(config.user());
+                pool.setPassword(config.password());
+                pool.setUrl(settings.initialUrl());
+                pools.put(entry.getKey(), pool);
+            }
+        } catch (SQLException | RuntimeException exception) {
+            close();
+            throw exception;
+        }
     }
 
     @Override
@@ -53,8 +79,7 @@ public final class MariaDbNewOrderStateController
 
     private void restoreHomeRows(Snapshot snapshot) throws SQLException {
         TpccNewOrderSpec spec = snapshot.spec();
-        MariaDbXaConfig config = config(spec.homeWarehouseId());
-        try (Connection connection = open(config)) {
+        try (Connection connection = open(spec.homeWarehouseId())) {
             connection.setAutoCommit(false);
             try {
                 deleteOrderRows(
@@ -111,7 +136,7 @@ public final class MariaDbNewOrderStateController
                 .computeIfAbsent(key.warehouseId(), ignored -> new LinkedHashMap<>())
                 .put(key, state));
         for (Map.Entry<Integer, Map<StockKey, StockState>> warehouse : byWarehouse.entrySet()) {
-            try (Connection connection = open(config(warehouse.getKey()))) {
+            try (Connection connection = open(warehouse.getKey())) {
                 connection.setAutoCommit(false);
                 try (PreparedStatement statement = connection.prepareStatement("""
                         UPDATE bmsql_stock
@@ -160,7 +185,7 @@ public final class MariaDbNewOrderStateController
 
     private void requireNoOrderRows(Snapshot snapshot) throws SQLException {
         TpccNewOrderSpec spec = snapshot.spec();
-        try (Connection connection = open(config(spec.homeWarehouseId()));
+        try (Connection connection = open(spec.homeWarehouseId());
              PreparedStatement statement = connection.prepareStatement("""
                      SELECT
                        (SELECT COUNT(*) FROM bmsql_oorder
@@ -184,7 +209,7 @@ public final class MariaDbNewOrderStateController
     }
 
     private int readNextOrderId(TpccNewOrderSpec spec) throws SQLException {
-        try (Connection connection = open(config(spec.homeWarehouseId()));
+        try (Connection connection = open(spec.homeWarehouseId());
              PreparedStatement statement = connection.prepareStatement("""
                      SELECT d_next_o_id FROM bmsql_district
                      WHERE d_w_id = ? AND d_id = ?
@@ -199,7 +224,7 @@ public final class MariaDbNewOrderStateController
     }
 
     private StockState readStock(StockKey key) throws SQLException {
-        try (Connection connection = open(config(key.warehouseId()));
+        try (Connection connection = open(key.warehouseId());
              PreparedStatement statement = connection.prepareStatement("""
                      SELECT s_quantity, s_ytd, s_order_cnt, s_remote_cnt
                      FROM bmsql_stock WHERE s_w_id = ? AND s_i_id = ?
@@ -220,7 +245,7 @@ public final class MariaDbNewOrderStateController
         Set<Integer> unique = new LinkedHashSet<>();
         warehouseIds.forEach(unique::add);
         for (int warehouseId : unique) {
-            try (Connection connection = open(config(warehouseId));
+            try (Connection connection = open(warehouseId);
                  Statement statement = connection.createStatement();
                  ResultSet result = statement.executeQuery("XA RECOVER")) {
                 if (result.next()) {
@@ -231,14 +256,18 @@ public final class MariaDbNewOrderStateController
         }
     }
 
-    private MariaDbXaConfig config(int warehouseId) {
-        MariaDbXaConfig config = configs.get(warehouseId);
-        if (config == null) throw new IllegalArgumentException("no config for warehouse " + warehouseId);
-        return config;
+    Connection open(int warehouseId) throws SQLException {
+        if (closed) throw new SQLException("state controller is closed");
+        MariaDbPoolDataSource pool = pools.get(warehouseId);
+        if (pool == null) throw new IllegalArgumentException("no config for warehouse " + warehouseId);
+        return pool.getConnection();
     }
 
-    private static Connection open(MariaDbXaConfig config) throws SQLException {
-        return DriverManager.getConnection(config.jdbcUrl(), config.user(), config.password());
+    @Override
+    public void close() {
+        if (closed) return;
+        closed = true;
+        pools.values().forEach(MariaDbPoolDataSource::close);
     }
 
     private static void requireOne(int affected, String operation) throws SQLException {

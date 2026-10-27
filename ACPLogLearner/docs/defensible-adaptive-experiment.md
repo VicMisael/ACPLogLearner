@@ -32,6 +32,30 @@ cache/order bias. The database is logically restored after every candidate;
 physical cache and background-server effects cannot be perfectly reset and
 remain a threat to validity to report with the results.
 
+## State-controller connections
+
+The snapshot, restoration, and verification controller owns one MariaDB JDBC
+pool per warehouse, with a minimum of one and a maximum of two connections.
+Returning a connection resets its session and rolls back unfinished work.
+The experiment closes these pools on both normal and exceptional exit.
+XA execution and redo collection retain their separate connection lifecycles.
+
+This avoids opening a new physical connection for every stock-row check. On
+macOS, that connection churn previously exhausted the ephemeral TCP port range
+with sockets in `TIME_WAIT`, causing `Can't assign requested address`.
+
+With the four-node sharded dataset available, run all tests including the opt-in
+pool integration checks with:
+
+```bash
+ACP_MARIADB_INTEGRATION_TEST=true ./gradlew test --rerun-tasks
+```
+
+The integration checks use warehouse 1 and the usual `ACP_MARIADB_1_URL`,
+`ACP_MARIADB_USER`, and `ACP_MARIADB_PASSWORD` overrides. They verify physical
+connection reuse, session reset, rollback of an uncommitted district update,
+and closure on exceptional exit. Run them without a concurrent workload.
+
 ## Default defensible matrix
 
 The default execution uses:
@@ -63,8 +87,9 @@ Run the default matrix with:
 ./gradlew runMariaDbDefensibleExperiment
 ```
 
-The database environment variables are the same as `runMariaDbAlps`. Important
-experiment overrides are:
+Database connections use `ACP_MARIADB_USER`, `ACP_MARIADB_PASSWORD`,
+`ACP_MARIADB_DATABASE`, and `ACP_MARIADB_1_URL` through `ACP_MARIADB_4_URL`,
+shared with the cluster smoke runner. Important experiment overrides are:
 
 | Variable | Default |
 | --- | ---: |

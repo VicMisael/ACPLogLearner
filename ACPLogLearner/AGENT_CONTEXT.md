@@ -1,5 +1,22 @@
 # Saved Agent Context
 
+## Current experiment cleanup (2026-10-26)
+
+Writing scope confirmed by the user: the article describes the current paired
+MariaDB experiment, not the earlier simulation or the 2PC-only baseline. Keep
+architecture, prediction, selection, labeling and evaluation descriptions aligned
+with MariaDbDefensibleExperimentMain.
+
+The user requested removal of the earlier experiment paths. The sole ALPS
+experiment entry point is now `runMariaDbDefensibleExperiment`
+(`MariaDbDefensibleExperimentMain`), with nine trees predicting completion,
+latency and redo separately for the three candidates. The single-label
+simulation experiment, its `TransactionOutcomeClass`/labeler/policy/predictor,
+and the 2PC-only `MariaDbAlpsMain` experiment have been removed. Protocol demos
+and simulation infrastructure used by protocol tests remain. Older descriptions
+below and historical experiment reports may refer to removed entry points; use
+the current runner and `MAPA_DO_CODIGO.md` for implementation details.
+
 Date saved: 2026-10-14
 
 ## Latest handoff: research and writing (2026-10-14)
@@ -42,11 +59,173 @@ conflict; older sections contain historical stages, not all current limitations.
 - The Mac has not been tested. Earlier Windows environment diagnostics must
   not be treated as Mac status. No new experiments were executed in this handoff.
 
+Research scope clarified: 2026-09-25
+
+Last updated: 2026-10-02
+
+## Latest experiment and thesis writing (2026-10-02)
+
+The user requested analysis of the latest experiment and the start of thesis
+writing. The current result source is
+`build/experiments/mac-2h-20261002-091218`, which completed in 2h01m40s.
+This supersedes the four-seed run as the primary presentation result source;
+older sections below retain historical results, not current estimates.
+
+Seven seeds (101-107), 100 warm-up blocks per seed and 430 observations per
+phase produced 15,050 measured logical transactions, 700 warm-up blocks, and
+47,250 XA executions in total. All 45,150 measured candidate executions were
+valid, with no duplicate seed/index records or expected-outcome mismatches.
+Each policy had 9,756 commits and 5,294 aborts (35.1761% abort rate), with no
+timeouts. Controlled participant votes explain identical outcomes across
+protocols; the 0.70 abort parameter applies per participant, not per transaction.
+
+Adaptive mean cost was 2.883293 versus 2.709450 for the heuristic. Adaptive
+reduced cost by 21.56% versus fixed 2PC, 6.87% versus fixed presumed abort,
+4.89% versus fixed presumed commit, and 11.55% versus random. However, adaptive
+cost was 6.42% higher than the heuristic, with a paired 95% difference interval
+[0.1350, 0.2126] excluding zero. Unlike the earlier four-seed result, this run
+supports lower heuristic cost under the tested setup. The direction of every
+comparison was consistent across all seven seeds. Do not merge this run with
+the previous one as eleven independent seeds, since identifiers overlap.
+
+The agreed additional metric has now been calculated: pooled cost per commit
+is 4.4479 for adaptive and 4.1797 for heuristic, including aborted-attempt costs
+and excluding warm-up. It is not a measurement of actual retries to success.
+Adaptive oracle agreement was 75.06%; heuristic agreement was 88.87%.
+Six of seven seeds missed the 20-consecutive-oracle-match adaptation criterion
+in the combined phase; one missed it during recovery. Completion accuracy
+averaged 91.29%; redo macro-F1 ranged from 0.476 to 0.510 across protocol models.
+
+An initial Portuguese methodology/results/discussion draft is saved at
+`docs/mestrado/resultados-preliminares.md`. It includes cost and paired intervals,
+abort rate and cost per commit, raw operational metrics, phase behavior, the
+nine prediction heads, and validity limitations with links to original artifacts.
+No final thesis template or bibliography has been applied yet. The results
+remain ready for advisor discussion; improvements are subsequent research.
+
+## Presentation decision: aborts and useful work (2026-10-02)
+
+The user agreed to present operational cost together with abort rate and cost
+per committed transaction. Preserve the current experimental cost function:
+expected aborts incur their measured latency, redo, messages, and protocol-log
+costs, but no extra abort penalty. Unexpected outcomes and timeouts are handled
+separately by the existing invalid-trial checks and penalties.
+
+For each policy, report abort rate as aborted measured attempts divided by all
+measured attempts, and cost per commit as the total operational cost of all its
+measured attempts (including aborts) divided by its number of commits. Use the
+same measurement population and exclude warm-up. Count one selected candidate
+per logical transaction for each policy, not all three paired executions as
+three independent business attempts. If there are no commits, cost per commit
+is undefined. These summaries have now been calculated in the latest analysis
+above; they have not been added to the runner's exported summary schema.
+
+Explain that controlled abort decisions are shared across protocol candidates.
+A correct required abort preserves consistency. Adding the same abort penalty
+to every candidate in a paired block would leave its ranking and regret
+unchanged, although absolute costs and relative percentages would change.
+Retried transactions are not currently measured by this experiment: discuss
+retry cost as future work, not an observed result. The user has approved this
+presentation framing, not a change to the cost function or a new experiment.
+
+## Advisor presentation readiness (2026-09-29)
+
+The user considers the current work ready to present to their master's advisor
+as preliminary experimental results. Further model improvements and the full
+ten-seed evaluation are follow-up research, not prerequisites for this meeting.
+
+The initial presentation used `build/experiments/mac-20260925-123031`.
+Use the newer seven-seed result above for the current presentation.
+The repeatedly attached `mac-20260925-114906/run.log` is the earlier failed run
+and must not be used as the completed experiment's evidence.
+
+The completed Mac experiment ran for 1h08m57s with seeds 101-104, 100 warm-up
+blocks per seed, 430 measured transactions per phase, five phases, and 50 ms
+injected latency during spike phases. It produced 8,600 measured logical
+transactions and 27,000 XA executions including warm-up. Analysis found no
+duplicate measured records, invalid candidate trials, or mismatches between
+expected and observed completion. The socket exhaustion error did not recur.
+
+Mean configured costs were: oracle 2.6318, static heuristic 2.7016, adaptive
+VFDT 2.8299, fixed presumed commit 3.0214, fixed presumed abort 3.0886, random
+3.2410, and fixed classic 2PC 3.6611. Adaptive reduced mean cost by 22.70%,
+8.38%, and 6.34% relative to fixed 2PC, presumed abort, and presumed commit,
+respectively. Each paired seed-level 95% interval excluded zero in favor of
+adaptive selection under this scenario.
+
+The heuristic had lower mean cost in all four seeds. Adaptive cost was 4.75%
+higher relative to the heuristic, but the paired adaptive-minus-heuristic 95%
+interval was [-0.0044, 0.2610], including zero. Do not claim that adaptive
+selection beats the heuristic or that this interval establishes a difference.
+The heuristic uses a rolling 30-transaction commit history with fixed thresholds:
+at least two-thirds commit selects presumed commit, at most one-third selects
+presumed abort, otherwise classic 2PC; fewer than 10 observations selects 2PC.
+"Static" describes its fixed rule, not an unchanging protocol choice.
+
+Completion prediction accuracy averaged 91.86%. Latency accuracy ranged from
+73.40% to 80.57% across protocol models. Redo accuracy ranged from 76.31% to
+79.95%, but macro-F1 was only 0.483-0.513. Adaptive oracle agreement was 77.93%
+overall, falling to 63.60% in the combined spike and 69.53% in recovery. Two
+seeds did not reach the 20-consecutive-oracle-match criterion during recovery.
+
+Presentation framing: predictions about future transaction properties can
+support lower-cost protocol selection than fixed protocols in the evaluated
+scenarios. The current learner has not demonstrated an advantage over the
+simple historical heuristic. This paired experiment supplies feedback from all
+candidates and does not yet establish equivalent gains under partial feedback
+in production. Keep both the predictor targets and candidate protocol set
+extensible; the current three protocols are not the limit of the thesis.
+
+A Keynote outline was proposed, but no deck has been created. Plan 10 main
+slides for 12-15 minutes: title, research question, ALPS architecture, future
+transaction prediction targets, four-node XA environment, paired evaluation
+and baselines, five-phase experiment, cost results versus fixed protocols,
+heuristic comparison and adaptation limits, conclusions and next steps.
+Optional backup slides cover cost weights, prediction metrics, and seed-level
+results. Use editable charts, a horizontal cost comparison, and a phase
+timeline. Identify the workload as TPC-C-like, not officially compliant TPC-C.
+Follow-up research includes ten seeds, cost-weight sensitivity, better redo
+prediction, drift-aware learners, and alignment of policy scores with measured
+cost. Do not imply these follow-ups must be completed before presenting.
+
+## macOS connection-pool validation (2026-09-25)
+
+The first four-seed Mac run failed after 27 seconds with
+`Can't assign requested address`. A debugger reproduction observed 16,353 TCP
+sockets in `TIME_WAIT` against the Mac's 16,384-port ephemeral range. MariaDB
+had only 2-3 simultaneous connections and no max-connection errors.
+
+`MariaDbNewOrderStateController` now owns a separate MariaDB JDBC pool per
+warehouse (minimum 1, maximum 2 connections), resets returned sessions, and
+closes its pools through the experiment's try-with-resources scope. XA and redo
+collection retain their own connection lifecycles.
+
+All 47 tests passed, including two opt-in real MariaDB tests for reuse,
+session reset, rollback, and exceptional cleanup. A real five-phase validation
+completed in 3m07s with seed 101, 100 warm-up blocks, 250 measured blocks per
+phase, and 1 ms injected latency: 1,350 logical blocks / 4,050 XA executions.
+The observed socket peak was 10,794 in `TIME_WAIT`; all four nodes had no
+prepared XA branches or experiment connections remaining after completion.
+Artifacts: `build/experiments/mac-pool-validation-20260925`.
+This is a connection-management validation, not a replacement for the planned
+one-hour experiment with the original 50 ms latency setting and multiple seeds.
+
 ## Project Summary
 
 A master's thesis project investigating how online machine-learning models can select the best atomic commit protocol at commit time. The current implementation uses categorical multi-head `VFDT`, but VFDT is only the first candidate. The thesis must keep the learner replaceable so continuous online predictors and non-learning baselines can reuse protocol execution, feature collection, labels, and policy selection.
 
 The current thesis execution plan is documented in `docs/alps-thesis-plan.md`.
+
+The research objective is to predict data about future transactions: their
+expected outcomes, behavior, and execution costs, using information available
+before those outcomes occur. The current completion, latency, and redo heads
+are the first implemented prediction targets, not a closed set. A separate
+policy uses these predictions to choose an atomic commit protocol.
+
+The candidate protocol set is extensible. Classic 2PC, presumed abort, and
+presumed commit are the three currently implemented and evaluated candidates,
+not a limit on the thesis scope. Additional protocols may be incorporated into
+execution, prediction, policy selection, and comparative evaluation.
 
 The test topology now assigns one global warehouse to each MariaDB node:
 warehouse `1` to `mariadb-1`, through warehouse `4` to `mariadb-4`. The load
@@ -56,8 +235,9 @@ script remaps and verifies all warehouse-bearing BenchmarkSQL rows after load.
 
 The central thesis idea is to use both transaction-execution data and MariaDB
 log-derived data to predict a bundle of outcomes for every candidate atomic
-commit protocol. A separate policy selects the lowest expected cost among
-classic 2PC, presumed abort, and presumed commit. Evaluation must compare that
+commit protocol for future transactions. A separate policy selects the lowest
+expected cost among the available candidates, currently classic 2PC, presumed
+abort, and presumed commit. Evaluation must compare that
 choice with paired-trial oracle data rather than rely on accuracy alone.
 
 The intended input combines:
@@ -290,11 +470,13 @@ The full result is documented in
 
 ## Immediate Goal
 
-Repeat the paired adaptive-protocol experiment across the ten configured seeds,
-then evaluate confidence intervals and cost-weight sensitivity. The one-seed
-15-minute run already shows that the adaptive policy beats all three fixed
-protocols and random selection, but it does not yet beat the static heuristic or
-provide independent-seed statistical evidence.
+Develop the Portuguese thesis draft and present the completed seven-seed Mac
+experiment to the advisor as preliminary results. Start from
+`docs/mestrado/resultados-preliminares.md` and the Keynote outline above. The
+latest results favor adaptive selection over all three fixed protocols but
+favor the heuristic over adaptive selection, with paired intervals excluding
+zero. Completing ten seeds and cost-weight sensitivity analysis remains
+follow-up work and does not block writing or the advisor presentation.
 
 The categorical multi-head VFDT trained exclusively on classic 2PC is the
 validated predictive baseline requested for this stage. Its counterfactual PA
